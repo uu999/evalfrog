@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M0 仓库骨架与架构护栏已实现，下一阶段为 M1 IR 与公共契约**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M1 IR、Node Catalog Contract 与公共契约已实现，下一阶段为 M2 Compiler、DSL、Source Map 与 Control Graph**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -87,11 +87,25 @@ evalfrog doctor --profile local --config-dir configs
 
 M0 只提供进程、配置和基础设施闭环，尚未提供 Workflow 创建或运行 API。
 
+## M1 Authoring Contract
+
+M1 已提供 Human Web 与 Agent CLI 共用的作者态契约：
+
+- [IR v1 JSON Schema](./contracts/ir/v1/schema.json)；
+- `internal/ir` 中的 Go Model、有界 Draft Parser、Strict Validator、Canonical JSON、SHA-256 Hash 和结构化 Diagnostic；
+- `internal/catalog` 中的 `catalog-v1` 及 Start、End、Branch、Code、HTTP、RPC 六类无版本号公共 Node Description；
+- [版本化正反例与 Golden Fixture](./contracts/ir/v1/fixtures/manifest.json)。
+
+Draft Parser 允许保存具有合法 IR 外壳但尚未完整的画布；Test/Publish 必须使用显式绑定 Catalog 的 Strict Validator。M1 尚未实现 Draft API、Compiler 或 Workflow 运行。
+
 ## 开发检查
 
 ```bash
 go test ./...
 go test -race ./...
+go test -count=20 ./contracts/ir ./internal/ir ./internal/catalog
+go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
+go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
 go vet ./...
 go build ./cmd/...
 go test -tags=integration ./tests/integration
@@ -284,4 +298,4 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。Workflow 领域代码从 M1 开始，README 不把后续计划描述成当前已经实现的能力。
+M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。M1 已冻结并实现作者态 IR 与 Node Catalog Contract；DSL、Compiler、Definition 持久化和 Runtime 仍是后续阶段，README 不把计划能力描述成当前成果。

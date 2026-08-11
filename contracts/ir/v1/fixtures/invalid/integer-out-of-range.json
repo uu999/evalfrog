@@ -1,0 +1,20 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    { "id": "start", "type": "start", "title": "开始", "inputs": [], "outputs": [{ "name": "workflow_input", "data_type": "object" }] },
+    {
+      "id": "branch",
+      "type": "branch",
+      "title": "分支",
+      "inputs": [
+        { "name": "value", "data_type": "integer", "source": "literal", "value": 9007199254740992 },
+        { "name": "cases", "data_type": "array", "source": "literal", "value": [{ "route": "yes", "operator": "eq", "value": 1 }] },
+        { "name": "default_route", "data_type": "string", "source": "literal", "value": "no" }
+      ],
+      "outputs": []
+    },
+    { "id": "end", "type": "end", "title": "结束", "inputs": [{ "name": "workflow_output", "data_type": "object", "source": "literal", "value": {} }], "outputs": [] }
+  ],
+  "edges": [{ "id": "start_to_branch", "source": "start", "target": "branch" }, { "id": "branch_to_end_yes", "source": "branch", "target": "end", "route": "yes" }, { "id": "branch_to_end_no", "source": "branch", "target": "end", "route": "no" }],
+  "layout": { "start": { "x": 0, "y": 0 }, "branch": { "x": 1, "y": 0 }, "end": { "x": 2, "y": 0 } }
+}

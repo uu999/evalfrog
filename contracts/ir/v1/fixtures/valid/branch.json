@@ -1,0 +1,24 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    { "id": "start", "type": "start", "title": "开始", "inputs": [], "outputs": [{ "name": "workflow_input", "data_type": "object" }] },
+    {
+      "id": "check_score",
+      "type": "branch",
+      "title": "判断分数",
+      "inputs": [
+        { "name": "value", "data_type": "integer", "source": "literal", "value": 85 },
+        { "name": "cases", "data_type": "array", "source": "literal", "value": [{ "route": "approved", "operator": "gte", "value": 80 }] },
+        { "name": "default_route", "data_type": "string", "source": "literal", "value": "rejected" }
+      ],
+      "outputs": []
+    },
+    { "id": "end", "type": "end", "title": "结束", "inputs": [{ "name": "workflow_output", "data_type": "object", "source": "literal", "value": {} }], "outputs": [] }
+  ],
+  "edges": [
+    { "id": "start_to_check", "source": "start", "target": "check_score" },
+    { "id": "check_to_end_approved", "source": "check_score", "target": "end", "route": "approved" },
+    { "id": "check_to_end_rejected", "source": "check_score", "target": "end", "route": "rejected" }
+  ],
+  "layout": { "start": { "x": 0, "y": 0 }, "check_score": { "x": 200, "y": 0 }, "end": { "x": 400, "y": 0 } }
+}

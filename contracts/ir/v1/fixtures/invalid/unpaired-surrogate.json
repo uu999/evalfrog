@@ -1,0 +1,8 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    { "id": "start", "type": "start", "title": "\ud800", "inputs": [], "outputs": [{ "name": "workflow_input", "data_type": "object" }] }
+  ],
+  "edges": [],
+  "layout": { "start": { "x": 0, "y": 0 } }
+}

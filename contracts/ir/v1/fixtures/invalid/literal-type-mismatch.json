@@ -1,0 +1,9 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    { "id": "start", "type": "start", "title": "开始", "inputs": [], "outputs": [{ "name": "workflow_input", "data_type": "object" }] },
+    { "id": "end", "type": "end", "title": "结束", "inputs": [{ "name": "workflow_output", "data_type": "object", "source": "literal", "value": "not-an-object" }], "outputs": [] }
+  ],
+  "edges": [{ "id": "start_to_end", "source": "start", "target": "end" }],
+  "layout": { "start": { "x": 0, "y": 0 }, "end": { "x": 1, "y": 0 } }
+}
