@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify generated dependency files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal tests)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and architecture tests
+        run: go test ./...
+      - name: Race detector
+        run: go test -race ./...
+      - name: Build four executables
+        run: |
+          go build ./cmd/evalfrog
+          go build ./cmd/control-plane
+          go build ./cmd/worker-builtin
+          go build ./cmd/worker-sandbox
+      - name: Validate all configuration profiles
+        run: |
+          go run ./cmd/evalfrog config validate --profile local --config-dir configs
+          go run ./cmd/evalfrog config validate --profile test --config-dir configs
+          go run ./cmd/evalfrog config validate --profile production-default --config-dir configs
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate Compose model
+        run: docker compose -f deployments/compose.yaml config --quiet
+      - name: Start M0 stack
+        run: docker compose -f deployments/compose.yaml up -d --build --wait
+      - name: CLI doctor
+        run: docker compose -f deployments/compose.yaml run --build --rm --no-deps evalfrog-cli doctor --profile local --config-dir /app/configs
+      - name: Dependency and migration integration tests
+        run: go test -tags=integration ./tests/integration
+      - name: Stop M0 stack
+        if: always()
+        run: docker compose -f deployments/compose.yaml down -v --remove-orphans

@@ -1,0 +1,79 @@
+profile: local
+namespace: local
+
+endpoints:
+  control_plane_url: "http://localhost:8080"
+
+postgres:
+  dsn: "postgres://evalfrog@localhost:15432/evalfrog?sslmode=disable"
+  schema: "evalfrog_local"
+  pool_min: 1
+  pool_max: 5
+  server_max_connections: 100
+  expected_control_plane_instances: 1
+
+redis:
+  scheduling:
+    address: "localhost:16379"
+    key_prefix: "evalfrog:local:sched:"
+    operation_timeout: 200ms
+    max_retries: 1
+    eviction_policy: "noeviction"
+  cache:
+    address: "localhost:16380"
+    key_prefix: "evalfrog:local:cache:"
+    operation_timeout: 500ms
+    max_retries: 0
+    eviction_policy: "allkeys-lfu"
+
+kafka:
+  brokers: ["localhost:29092"]
+  topic_prefix: "evalfrog.local"
+  replication_factor: 1
+  min_isr: 1
+  max_manual_replay_window: 1h
+  topics:
+    builtin_task: {partitions: 1, retention: 2h}
+    sandbox_task: {partitions: 1, retention: 2h}
+    runtime_event: {partitions: 1, retention: 4h}
+    dlq: {partitions: 1, retention: 24h}
+
+scheduler:
+  lane_count: 8
+  epoch: 500ms
+  active_project_ttl: 3s
+  credit_grant_batch: 4
+  redis_candidate_batch: 8
+  admission_concurrency: 2
+  inflight_reservation_ttl: 30s
+  ready_reconcile_interval: 5s
+
+worker:
+  builtin_slots: 4
+  sandbox_slots: 2
+  expected_builtin_consumers: 1
+  expected_sandbox_consumers: 1
+  expected_runtime_event_consumers: 1
+  task_poll_limit: 4
+  heartbeat_interval: 2s
+  lease_duration: 10s
+  lost_after: 12s
+  recovery_scanner_interval: 2s
+  recovery_backoff: [1s, 2s, 4s]
+
+outbox:
+  batch: 20
+  publish_concurrency: 2
+  published_retention: 24h
+  inbox_retention: 24h
+
+cache:
+  execution_snapshot_ttl: 1h
+  active_run_context_ttl: 30m
+  terminal_run_context_ttl: 10m
+  active_run_read_model_ttl: 5m
+  terminal_run_read_model_ttl: 10m
+  definition_negative_ttl: 10s
+
+observability:
+  log_level: "debug"

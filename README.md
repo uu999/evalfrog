@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**Architecture Ready，进入实现阶段**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M0 仓库骨架与架构护栏已实现，下一阶段为 M1 IR 与公共契约**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -42,6 +42,62 @@ Builtin Worker Pool + Sandbox Worker Pool
 ```
 
 Control Plane 是模块化单体，不是一个没有边界的大 Service。Definition、Compiler、Runtime Engine、Scheduler、Attempt Coordinator、Execution Context、Eventing 和 Recovery 拥有独立职责，可以同进程部署，但不能互相绕过状态所有权。
+
+## M0 Quick Start
+
+前置条件：Go `1.26+`、Docker 与 Docker Compose。
+
+Windows 使用一条命令构建并启动 PostgreSQL、Scheduling Redis、Cache Redis、Kafka、Migration、Control Plane 和两个 Worker，随后运行 CLI Doctor：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
+```
+
+Linux/macOS：
+
+```bash
+./scripts/dev.sh
+```
+
+启动成功后：
+
+| 入口 | 地址 |
+|---|---|
+| Control Plane | `http://localhost:8080` |
+| Builtin Worker Health | `http://localhost:8081/health/ready` |
+| Sandbox Worker Health | `http://localhost:8082/health/ready` |
+| PostgreSQL | `localhost:15432` |
+| Scheduling Redis | `localhost:16379` |
+| Cache Redis | `localhost:16380` |
+| Kafka | `localhost:29092` |
+
+停止进程但保留本地数据：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\down.ps1
+```
+
+M0 CLI 命令：
+
+```text
+evalfrog version
+evalfrog config validate --profile local --config-dir configs
+evalfrog doctor --profile local --config-dir configs
+```
+
+M0 只提供进程、配置和基础设施闭环，尚未提供 Workflow 创建或运行 API。
+
+## 开发检查
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./cmd/...
+go test -tags=integration ./tests/integration
+```
+
+架构测试会扫描仓库依赖，并拒绝 Domain 导入 Adapter、Worker 导入 PostgreSQL Adapter、Runtime 读取作者态模型、Scheduler 导入 Engine，以及新增 `common/utils/service/pkg` 等逃逸边界的目录。
 
 ## 核心架构原则
 
@@ -228,4 +284,4 @@ Infrastructure Adapter
 
 ## 开发状态
 
-当前仓库首先承载架构基线和实施计划。可运行代码、Local Profile 和 Quick Start 将在 M0 完成后加入；在此之前，README 不提供不可执行的伪启动命令。
+M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。Workflow 领域代码从 M1 开始，README 不把后续计划描述成当前已经实现的能力。

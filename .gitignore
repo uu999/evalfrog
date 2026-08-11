@@ -1,0 +1,12 @@
+/bin/
+/coverage/
+/*.exe
+/evalfrog
+/control-plane
+/worker-builtin
+/worker-sandbox
+*.out
+.env
+.idea/
+.vscode/
+.DS_Store
