@@ -1,0 +1,187 @@
+name: evalfrog-local
+
+x-common-environment: &common-environment
+  EVALFROG_PROFILE: local
+  EVALFROG_CONFIG_DIR: /app/configs
+  EVALFROG_KAFKA_BROKERS: kafka:9092
+  EVALFROG_CONTROL_PLANE_URL: http://control-plane:8080
+
+x-control-plane-environment: &control-plane-environment
+  <<: *common-environment
+  EVALFROG_POSTGRES_DSN: postgres://evalfrog:evalfrog@postgres:5432/evalfrog?sslmode=disable
+  EVALFROG_SCHEDULING_REDIS_ADDRESS: redis-scheduling:6379
+  EVALFROG_CACHE_REDIS_ADDRESS: redis-cache:6379
+  EVALFROG_MIGRATIONS_DIR: /app/migrations
+
+x-app-build: &app-build
+  context: ..
+  dockerfile: Dockerfile
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: evalfrog
+      POSTGRES_PASSWORD: evalfrog
+      POSTGRES_DB: evalfrog
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evalfrog -d evalfrog"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis-scheduling:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - scheduling-redis-data:/data
+
+  redis-cache:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lfu"]
+    ports:
+      - "16380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:9093,PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_MESSAGE_MAX_BYTES: 262144
+    ports:
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        create_topic() {
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic "$1" --partitions "$2" --replication-factor 1 \
+            --config retention.ms="$3" --config max.message.bytes=262144
+        }
+        create_topic evalfrog.local.workflow-task-builtin-v1 1 7200000
+        create_topic evalfrog.local.workflow-task-sandbox-v1 1 7200000
+        create_topic evalfrog.local.workflow-runtime-event-v1 1 14400000
+        create_topic evalfrog.local.workflow-dead-letter-v1 1 86400000
+
+  migrate:
+    build:
+      <<: *app-build
+      target: control-plane
+    command: ["--profile", "local", "--config-dir", "/app/configs", "--migrate"]
+    environment: *control-plane-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  control-plane:
+    build:
+      <<: *app-build
+      target: control-plane
+    environment: *control-plane-environment
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis-scheduling:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/evalfrog", "--healthcheck-url", "http://127.0.0.1:8080/health/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    init: true
+
+  worker-builtin:
+    build:
+      <<: *app-build
+      target: worker-builtin
+    environment: *common-environment
+    ports:
+      - "8081:8081"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/evalfrog", "--healthcheck-url", "http://127.0.0.1:8081/health/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    init: true
+
+  worker-sandbox:
+    build:
+      <<: *app-build
+      target: worker-sandbox
+    environment: *common-environment
+    ports:
+      - "8082:8082"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/evalfrog", "--healthcheck-url", "http://127.0.0.1:8082/health/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    init: true
+
+  evalfrog-cli:
+    profiles: ["tools"]
+    build:
+      <<: *app-build
+      target: evalfrog
+    environment: *common-environment
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  scheduling-redis-data:
+  kafka-data:

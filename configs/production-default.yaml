@@ -1,0 +1,126 @@
+profile: production-default
+namespace: production-default
+
+http:
+  control_plane_address: ":8080"
+  builtin_worker_address: ":8081"
+  sandbox_worker_address: ":8082"
+  read_header_timeout: 5s
+  idle_timeout: 60s
+
+endpoints:
+  control_plane_url: "http://evalfrog-control-plane:8080"
+
+shutdown:
+  timeout: 30s
+
+postgres:
+  dsn: "postgres://evalfrog@postgres:5432/evalfrog?sslmode=require"
+  schema: "evalfrog_production_default"
+  pool_min: 5
+  pool_max: 20
+  server_max_connections: 400
+  expected_control_plane_instances: 8
+  statement_timeout: 5s
+  lock_timeout: 500ms
+  idle_in_transaction_timeout: 10s
+
+redis:
+  scheduling:
+    address: "scheduling-redis:6379"
+    password: ""
+    db: 0
+    key_prefix: "evalfrog:production-default:sched:"
+    operation_timeout: 200ms
+    max_retries: 1
+    eviction_policy: "noeviction"
+  cache:
+    address: "cache-redis:6379"
+    password: ""
+    db: 0
+    key_prefix: "evalfrog:production-default:cache:"
+    operation_timeout: 500ms
+    max_retries: 0
+    eviction_policy: "allkeys-lfu"
+
+kafka:
+  brokers: ["kafka:9092"]
+  topic_prefix: "evalfrog.production-default"
+  replication_factor: 3
+  min_isr: 2
+  broker_max_message_bytes: 262144
+  envelope_max_bytes: 65536
+  max_manual_replay_window: 24h
+  task_max_poll_records: 32
+  runtime_max_poll_records: 100
+  session_timeout: 45s
+  heartbeat_interval: 3s
+  max_poll_interval: 60s
+  request_timeout: 30s
+  delivery_timeout: 120s
+  linger: 5ms
+  batch_bytes: 65536
+  topics:
+    builtin_task: {name: "workflow-task-builtin-v1", partitions: 12, retention: 24h}
+    sandbox_task: {name: "workflow-task-sandbox-v1", partitions: 12, retention: 24h}
+    runtime_event: {name: "workflow-runtime-event-v1", partitions: 24, retention: 72h}
+    dlq: {name: "workflow-dead-letter-v1", partitions: 12, retention: 336h}
+
+scheduler:
+  lane_count: 128
+  epoch: 1s
+  active_project_ttl: 5s
+  credit_grant_batch: 8
+  redis_candidate_batch: 32
+  admission_concurrency: 8
+  inflight_reservation_ttl: 300s
+  ready_reconcile_interval: 30s
+  dispatch_buffer_factor: 1.2
+  epoch_capacity_change_limit: 0.10
+  idle_poll: 100ms
+  idle_poll_max: 1s
+
+worker:
+  builtin_slots: 32
+  sandbox_slots: 12
+  expected_builtin_consumers: 12
+  expected_sandbox_consumers: 12
+  expected_runtime_event_consumers: 24
+  task_poll_limit: 32
+  heartbeat_interval: 15s
+  lease_duration: 60s
+  lost_after: 75s
+  recovery_scanner_interval: 10s
+  max_recoveries: 3
+  claim_timeout: 5s
+  complete_timeout: 10s
+  recovery_backoff: [5s, 15s, 45s]
+
+outbox:
+  batch: 100
+  active_poll: 100ms
+  idle_poll_max: 1s
+  claim_lease: 30s
+  publish_concurrency: 8
+  published_retention: 168h
+  inbox_retention: 168h
+  cleanup_interval: 30m
+  retry_timer_interval: 1s
+  deadline_scanner_interval: 5s
+  reconciler_interval: 30s
+  scan_batch: 100
+
+cache:
+  execution_snapshot_ttl: 24h
+  active_run_context_ttl: 6h
+  terminal_run_context_ttl: 1h
+  active_run_read_model_ttl: 15m
+  terminal_run_read_model_ttl: 1h
+  definition_negative_ttl: 30s
+
+migrations:
+  directory: "migrations"
+  lock_timeout: 30s
+
+observability:
+  log_level: "info"
