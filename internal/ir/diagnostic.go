@@ -19,6 +19,12 @@ const (
 	PhaseStructure Phase = "structure"
 	PhaseCatalog   Phase = "catalog"
 	PhaseReference Phase = "reference"
+	PhaseGraph     Phase = "control_graph"
+	PhaseBinding   Phase = "binding"
+	PhaseResource  Phase = "resource"
+	PhaseCompile   Phase = "compile"
+	PhaseDSL       Phase = "dsl"
+	PhaseSourceMap Phase = "source_map"
 	PhaseCanonical Phase = "canonical"
 )
 
@@ -84,10 +90,22 @@ func phaseSortKey(value Phase) string {
 		return "2"
 	case PhaseReference:
 		return "3"
-	case PhaseCanonical:
+	case PhaseGraph:
 		return "4"
+	case PhaseBinding:
+		return "5"
+	case PhaseResource:
+		return "6"
+	case PhaseCompile:
+		return "7"
+	case PhaseDSL:
+		return "8"
+	case PhaseSourceMap:
+		return "9"
+	case PhaseCanonical:
+		return "a"
 	default:
-		return "9" + string(value)
+		return "z" + string(value)
 	}
 }
 

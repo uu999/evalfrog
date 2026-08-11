@@ -239,7 +239,18 @@ Draft 可以暂时违反图约束，但 Draft Test 和 Publish 必须至少校�
 - Ref Source 是 Target 的控制上游；
 - `Active(Target) ⇒ Active(Source)`。
 
-## 10. 尚未冻结
+## 10. M2 静态分析算法
 
-- 对上述激活蕴含关系采用的具体静态分析算法；
-- 未来 Data Merge/Select 的节点形态。
+M2 使用有序多值决策图（Multi-valued Decision Diagram，MDD）精确表达 Node Activation：
+
+1. 按确定性的拓扑顺序为每个 Branch 建立一个多值变量，其 Domain 是该 Branch 声明的全部 Route；
+2. Start 的激活公式为 `true`；普通 Edge 传播 Source 激活公式；Branch Edge 增加 `branch_route = edge.route` 条件；
+3. 多入边 Node 的公式是所有入边公式的逻辑 OR，与隐式 OR-Join 完全一致；
+4. 对每个 Ref 检查 `Active(Target) AND NOT Active(Source)` 是否恒为 `false`；非空即返回 `UNSAFE_DATA_BINDING`；
+5. MDD 使用唯一表和 Apply Memo 共享等价子图，不枚举所有 Branch Route 组合。
+
+选择 MDD 而不是只做 Dominator，是因为普通 Node 多出边会并行激活：两个并行节点可能始终同时激活，但彼此不构成经典控制流 Dominator。选择 MDD 而不是 Route 组合穷举，是为了避免多个独立 Branch 汇合时出现指数级组合。
+
+分析设置有界节点数并失败关闭；超过实现安全上限返回 `CONTROL_GRAPH_COMPLEXITY_EXCEEDED`，绝不以近似算法放行不安全引用。控制上游可达性仍是独立前置条件，使用 DAG 拓扑与位集合传递闭包检查。
+
+未来 Data Merge/Select 的节点形态仍未冻结。

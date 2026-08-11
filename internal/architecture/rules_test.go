@@ -38,12 +38,17 @@ func TestRulesRejectForbiddenImports(t *testing.T) {
 		{"worker database", "internal/worker/runtime", "internal/adapters/postgres", "workers must not"},
 		{"runtime authoring", "internal/runtime/engine", "internal/ir", "authoring models"},
 		{"scheduler engine", "internal/scheduling", "internal/runtime/engine", "control semantics"},
+		{"compiler kafka", "internal/compiler", "github.com/twmb/franz-go", "compiler must remain deterministic"},
 	}
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			graph := Graph{ModulePath + "/" + test.from: {ModulePath + "/" + test.to}}
+			imported := ModulePath + "/" + test.to
+			if strings.HasPrefix(test.to, "github.com/") || strings.HasPrefix(test.to, "net/") {
+				imported = test.to
+			}
+			graph := Graph{ModulePath + "/" + test.from: {imported}}
 			violations := Validate(graph)
 			if len(violations) == 0 || !strings.Contains(violations[0].Reason, test.reason) {
 				t.Fatalf("expected %q violation, got %+v", test.reason, violations)

@@ -50,6 +50,29 @@ func TestBuiltinCatalogPublishesSixVersionlessDescriptions(t *testing.T) {
 	}
 }
 
+func TestRuntimeCoordinatesAndPoliciesStayInternal(t *testing.T) {
+	t.Parallel()
+	builtin := BuiltinV1()
+	encoded, err := json.Marshal(builtin.Descriptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range [][]byte{[]byte("operation_version"), []byte("operation_type"), []byte("retry_backoff"), []byte("attempt_timeout")} {
+		if bytes.Contains(encoded, forbidden) {
+			t.Fatalf("public Node Description leaked internal runtime field %q", forbidden)
+		}
+	}
+	for _, description := range builtin.Descriptions() {
+		runtimeContract, exists := builtin.RuntimeContract(description.Type)
+		if !exists || runtimeContract.Kind != description.Kind || runtimeContract.OperationVersion != 1 {
+			t.Fatalf("invalid runtime contract for %s: %+v", description.Type, runtimeContract)
+		}
+		if description.Kind == KindTask && runtimeContract.DefaultExecutionPolicy.MaxAttempts == 0 {
+			t.Fatalf("task %s has no internal execution policy", description.Type)
+		}
+	}
+}
+
 func TestDescriptionsAreDefensiveCopies(t *testing.T) {
 	t.Parallel()
 	catalog := BuiltinV1()

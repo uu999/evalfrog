@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M1 IR、Node Catalog Contract 与公共契约已实现，下一阶段为 M2 Compiler、DSL、Source Map 与 Control Graph**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M2 Compiler、DSL、Source Map 与 Control Graph 已实现，下一阶段为 M3 Access、Managed Resources 与 Definition 生命周期**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -96,14 +96,27 @@ M1 已提供 Human Web 与 Agent CLI 共用的作者态契约：
 - `internal/catalog` 中的 `catalog-v1` 及 Start、End、Branch、Code、HTTP、RPC 六类无版本号公共 Node Description；
 - [版本化正反例与 Golden Fixture](./contracts/ir/v1/fixtures/manifest.json)。
 
-Draft Parser 允许保存具有合法 IR 外壳但尚未完整的画布；Test/Publish 必须使用显式绑定 Catalog 的 Strict Validator。M1 尚未实现 Draft API、Compiler 或 Workflow 运行。
+Draft Parser 允许保存具有合法 IR 外壳但尚未完整的画布；Test/Publish 必须使用显式绑定 Catalog 的 Strict Validator。M1 当时尚未实现 Draft API、Compiler 或 Workflow 运行。
+
+## M2 Runtime Contract 与确定性 Compiler
+
+M2 已实现不依赖数据库、Redis、Kafka 或 HTTP Adapter 的确定性编译链：
+
+- [DSL v1 JSON Schema](./contracts/dsl/v1/schema.json) 与独立 Runtime Model；
+- [Source Map v1 JSON Schema](./contracts/source-map/v1/schema.json)、Node/Edge Key-Value 映射、字段精确解析和 Node 回退；
+- `internal/compiler` 中的 Handler Registry、Control Graph Validator、Resource Bindings、Project Policy、Manifest 与四类 Hash；
+- 单 Start/End DAG、全图可达、Branch Route、隐式 OR-Join 和 `Active(Target) ⇒ Active(Source)` 静态校验；
+- `control.start/end/branch@1` 与 `task.python/http/rpc@1` Operation 编译；
+- Runtime DSL 自校验和执行前全量 Operation Compatibility Check。
+
+编译器输入中的 Resource Bindings 只是 M3 未来授权/解析后的稳定值，不代表当前已经实现 Connection、Service 或 Model 数据库。M2 也尚未实现 Draft/Published Version 持久化和 Runtime Engine。
 
 ## 开发检查
 
 ```bash
 go test ./...
 go test -race ./...
-go test -count=20 ./contracts/ir ./internal/ir ./internal/catalog
+go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler
 go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
 go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
 go vet ./...
@@ -111,7 +124,7 @@ go build ./cmd/...
 go test -tags=integration ./tests/integration
 ```
 
-架构测试会扫描仓库依赖，并拒绝 Domain 导入 Adapter、Worker 导入 PostgreSQL Adapter、Runtime 读取作者态模型、Scheduler 导入 Engine，以及新增 `common/utils/service/pkg` 等逃逸边界的目录。
+架构测试会扫描仓库依赖，并拒绝 Domain 导入 Adapter、Compiler 导入 HTTP/PostgreSQL/Redis/Kafka Client、Worker 导入 PostgreSQL Adapter、Runtime 读取作者态模型、Scheduler 导入 Engine，以及新增 `common/utils/service/pkg` 等逃逸边界的目录。
 
 ## 核心架构原则
 
@@ -220,6 +233,8 @@ evalfrog/
 ├─ web/
 ├─ contracts/
 │  ├─ ir/
+│  ├─ dsl/
+│  ├─ source-map/
 │  ├─ openapi/
 │  └─ messages/
 ├─ internal/
@@ -229,6 +244,8 @@ evalfrog/
 │  ├─ ir/
 │  ├─ catalog/
 │  ├─ compiler/
+│  ├─ dsl/
+│  ├─ sourcemap/
 │  ├─ runtime/{engine,attempt,context}/
 │  ├─ scheduling/
 │  ├─ eventing/
@@ -298,4 +315,4 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。M1 已冻结并实现作者态 IR 与 Node Catalog Contract；DSL、Compiler、Definition 持久化和 Runtime 仍是后续阶段，README 不把计划能力描述成当前成果。
+M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。M1 已冻结作者态 IR 与 Node Catalog Contract；M2 已实现确定性 Compiler、DSL、Source Map 和 Control Graph 静态校验。Definition 持久化、Draft/Publish API、Runtime Engine、Scheduler 与 Worker 执行仍是后续阶段，README 不把计划能力描述成当前成果。

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evalfrog.dev/contracts/dsl/v1/schema.json",
+  "title": "EvalFrog Runtime DSL v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dsl_version", "entry_node_id", "exit_node_id", "nodes", "edges"],
+  "properties": {
+    "dsl_version": { "const": "1" },
+    "entry_node_id": { "$ref": "#/$defs/nodeId" },
+    "exit_node_id": { "$ref": "#/$defs/nodeId" },
+    "nodes": { "type": "array", "minItems": 2, "maxItems": 10000, "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "minItems": 1, "maxItems": 10000, "items": { "$ref": "#/$defs/edge" } }
+  },
+  "$defs": {
+    "nodeId": { "type": "string", "pattern": "^xn_[0-9a-f]{24}$" },
+    "edgeId": { "type": "string", "pattern": "^xe_[0-9a-f]{24}$" },
+    "portName": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+    "routeName": { "$ref": "#/$defs/portName" },
+    "dataType": { "enum": ["string", "integer", "number", "boolean", "object", "array"] },
+    "jsonValue": { "type": ["string", "integer", "number", "boolean", "object", "array"] },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "operation", "inputs", "outputs", "execution_policy"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nodeId" },
+        "kind": { "enum": ["control", "task"] },
+        "operation": { "$ref": "#/$defs/operation" },
+        "inputs": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/portName" },
+          "additionalProperties": { "$ref": "#/$defs/inputBinding" }
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/portName" },
+          "additionalProperties": { "$ref": "#/$defs/dataType" }
+        },
+        "execution_policy": { "$ref": "#/$defs/executionPolicy" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "version", "config"],
+      "properties": {
+        "type": { "type": "string", "pattern": "^(control|task)\\.[a-z][a-z0-9_]{0,63}$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "config": { "type": "object" }
+      }
+    },
+    "inputBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data_type", "value"],
+          "properties": {
+            "kind": { "const": "literal" },
+            "data_type": { "$ref": "#/$defs/dataType" },
+            "value": { "$ref": "#/$defs/jsonValue" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data_type", "output"],
+          "properties": {
+            "kind": { "const": "node_output" },
+            "data_type": { "$ref": "#/$defs/dataType" },
+            "output": { "$ref": "#/$defs/outputReference" }
+          }
+        }
+      ]
+    },
+    "outputReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "name"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/nodeId" },
+        "name": { "$ref": "#/$defs/portName" }
+      }
+    },
+    "executionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1 },
+        "max_recoveries": { "type": "integer", "minimum": 0 },
+        "attempt_timeout_ms": { "type": "integer", "minimum": 1 },
+        "retry_backoff": { "$ref": "#/$defs/retryBackoff" },
+        "retryable_error_codes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128 } }
+      }
+    },
+    "retryBackoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "delay_ms"],
+      "properties": {
+        "kind": { "const": "fixed" },
+        "delay_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_node_id", "target_node_id", "activation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/edgeId" },
+        "source_node_id": { "$ref": "#/$defs/nodeId" },
+        "target_node_id": { "$ref": "#/$defs/nodeId" },
+        "activation": { "$ref": "#/$defs/activation" }
+      }
+    },
+    "activation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "always" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "route"],
+          "properties": {
+            "kind": { "const": "route" },
+            "route": { "$ref": "#/$defs/routeName" }
+          }
+        }
+      ]
+    }
+  }
+}

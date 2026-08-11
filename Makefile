@@ -7,7 +7,7 @@ test:
 	go test ./...
 
 test-contract:
-	go test -count=20 ./contracts/ir ./internal/ir ./internal/catalog
+	go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler
 
 test-fuzz:
 	go test ./internal/ir -run='^$$' -fuzz=FuzzParser -fuzztime=5s

@@ -15,6 +15,7 @@ type nodeValidator func(ir.Node) []ir.Diagnostic
 type contract struct {
 	revision    uint32
 	description NodeDescription
+	runtime     RuntimeContract
 	validate    nodeValidator
 }
 
@@ -69,6 +70,20 @@ func validateContractDefinition(value contract) error {
 	}
 	if strings.TrimSpace(description.Description) == "" || len(description.Examples) == 0 {
 		return fmt.Errorf("node %q must publish a description and example", description.Type)
+	}
+	if value.runtime.Kind != description.Kind || value.runtime.OperationType == "" || value.runtime.OperationVersion == 0 {
+		return fmt.Errorf("node %q has invalid runtime contract", description.Type)
+	}
+	if value.runtime.Kind == KindControl {
+		policy := value.runtime.DefaultExecutionPolicy
+		if policy.MaxAttempts != 0 || policy.MaxRecoveries != 0 || policy.AttemptTimeoutMS != 0 || policy.RetryBackoffMS != 0 || len(policy.RetryableErrorCodes) != 0 {
+			return fmt.Errorf("control node %q cannot have an execution policy", description.Type)
+		}
+	} else {
+		policy := value.runtime.DefaultExecutionPolicy
+		if policy.MaxAttempts == 0 || policy.AttemptTimeoutMS == 0 || policy.RetryBackoffMS == 0 {
+			return fmt.Errorf("task node %q has an incomplete default execution policy", description.Type)
+		}
 	}
 	inputNames := make(map[ir.PortName]struct{}, len(description.Inputs))
 	for _, input := range description.Inputs {
@@ -149,6 +164,16 @@ func (c *Catalog) Revision() RevisionID {
 func (c *Catalog) ContractRevision(nodeType ir.NodeType) (uint32, bool) {
 	value, exists := c.contracts[nodeType]
 	return value.revision, exists
+}
+
+func (c *Catalog) RuntimeContract(nodeType ir.NodeType) (RuntimeContract, bool) {
+	value, exists := c.contracts[nodeType]
+	if !exists {
+		return RuntimeContract{}, false
+	}
+	result := value.runtime
+	result.DefaultExecutionPolicy.RetryableErrorCodes = append([]string(nil), result.DefaultExecutionPolicy.RetryableErrorCodes...)
+	return result, true
 }
 
 func (c *Catalog) Describe(nodeType ir.NodeType) (NodeDescription, bool) {

@@ -1,0 +1,94 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "title": "开始",
+      "inputs": [],
+      "outputs": [{ "name": "workflow_input", "data_type": "object" }]
+    },
+    {
+      "id": "prepare_order",
+      "type": "code",
+      "title": "准备订单",
+      "inputs": [
+        { "name": "source_code", "data_type": "string", "source": "literal", "value": "def main(inputs):\n    return {'score': 85, 'payload': inputs['request']}" },
+        { "name": "request", "data_type": "object", "source": "ref", "ref_node": "start", "ref_output": "workflow_input" }
+      ],
+      "outputs": [
+        { "name": "score", "data_type": "integer" },
+        { "name": "payload", "data_type": "object" }
+      ]
+    },
+    {
+      "id": "choose_transport",
+      "type": "branch",
+      "title": "选择调用方式",
+      "inputs": [
+        { "name": "value", "data_type": "integer", "source": "ref", "ref_node": "prepare_order", "ref_output": "score" },
+        { "name": "cases", "data_type": "array", "source": "literal", "value": [{ "route": "http_route", "operator": "gte", "value": 80 }] },
+        { "name": "default_route", "data_type": "string", "source": "literal", "value": "rpc_route" }
+      ],
+      "outputs": []
+    },
+    {
+      "id": "create_via_http",
+      "type": "http",
+      "title": "HTTP 创建订单",
+      "inputs": [
+        { "name": "connection_ref", "data_type": "string", "source": "literal", "value": "customer_api" },
+        { "name": "method", "data_type": "string", "source": "literal", "value": "POST" },
+        { "name": "relative_path", "data_type": "string", "source": "literal", "value": "/v1/orders" },
+        { "name": "body", "data_type": "object", "source": "ref", "ref_node": "prepare_order", "ref_output": "payload" },
+        { "name": "accepted_statuses", "data_type": "array", "source": "literal", "value": [200, 201] }
+      ],
+      "outputs": [{ "name": "response", "data_type": "object" }]
+    },
+    {
+      "id": "create_via_rpc",
+      "type": "rpc",
+      "title": "RPC 创建订单",
+      "inputs": [
+        { "name": "service_ref", "data_type": "string", "source": "literal", "value": "order_service" },
+        { "name": "operation", "data_type": "string", "source": "literal", "value": "CreateOrder" },
+        { "name": "request", "data_type": "object", "source": "ref", "ref_node": "prepare_order", "ref_output": "payload" }
+      ],
+      "outputs": [{ "name": "response", "data_type": "object" }]
+    },
+    {
+      "id": "finalize",
+      "type": "code",
+      "title": "汇合结果",
+      "inputs": [
+        { "name": "source_code", "data_type": "string", "source": "literal", "value": "def main(inputs):\n    return {'result': {'completed': True}}" }
+      ],
+      "outputs": [{ "name": "result", "data_type": "object" }]
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "title": "结束",
+      "inputs": [{ "name": "workflow_output", "data_type": "object", "source": "ref", "ref_node": "finalize", "ref_output": "result" }],
+      "outputs": []
+    }
+  ],
+  "edges": [
+    { "id": "start_to_prepare", "source": "start", "target": "prepare_order" },
+    { "id": "prepare_to_branch", "source": "prepare_order", "target": "choose_transport" },
+    { "id": "branch_to_http", "source": "choose_transport", "target": "create_via_http", "route": "http_route" },
+    { "id": "branch_to_rpc", "source": "choose_transport", "target": "create_via_rpc", "route": "rpc_route" },
+    { "id": "http_to_finalize", "source": "create_via_http", "target": "finalize" },
+    { "id": "rpc_to_finalize", "source": "create_via_rpc", "target": "finalize" },
+    { "id": "finalize_to_end", "source": "finalize", "target": "end" }
+  ],
+  "layout": {
+    "start": { "x": 0, "y": 0 },
+    "prepare_order": { "x": 200, "y": 0 },
+    "choose_transport": { "x": 400, "y": 0 },
+    "create_via_http": { "x": 600, "y": -100 },
+    "create_via_rpc": { "x": 600, "y": 100 },
+    "finalize": { "x": 800, "y": 0 },
+    "end": { "x": 1000, "y": 0 }
+  }
+}
