@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "codex/**"]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -27,8 +27,8 @@ jobs:
         run: go vet ./...
       - name: Unit and architecture tests
         run: go test ./...
-      - name: IR contract repeatability
-        run: go test -count=20 ./contracts/ir ./internal/ir ./internal/catalog
+      - name: Authoring and runtime contract repeatability
+        run: go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler
       - name: Bounded IR fuzzing
         run: |
           go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s

@@ -31,7 +31,7 @@ func (violation Violation) Error() string {
 
 var domainPrefixes = []string{
 	"internal/access", "internal/resources", "internal/definition", "internal/ir", "internal/catalog",
-	"internal/compiler", "internal/runtime", "internal/scheduling", "internal/eventing", "internal/recovery", "internal/projection",
+	"internal/compiler", "internal/dsl", "internal/sourcemap", "internal/runtime", "internal/scheduling", "internal/eventing", "internal/recovery", "internal/projection",
 }
 
 func Validate(graph Graph) []Violation {
@@ -40,6 +40,11 @@ func Validate(graph Graph) []Violation {
 		fromRelative := localPath(from)
 		for _, imported := range imports {
 			toRelative := localPath(imported)
+			if fromRelative == "internal/compiler" && hasAnyPrefix(imported, []string{
+				"net/http", "github.com/jackc/pgx", "github.com/redis/go-redis", "github.com/twmb/franz-go",
+			}) {
+				violations = append(violations, Violation{from, imported, "compiler must remain deterministic and cannot import HTTP, PostgreSQL, Redis, or Kafka clients"})
+			}
 			if toRelative == "" {
 				continue
 			}
@@ -87,9 +92,7 @@ func LoadGraph(root string) (Graph, error) {
 				if err != nil {
 					return err
 				}
-				if strings.HasPrefix(value, ModulePath+"/") {
-					graph[from] = append(graph[from], value)
-				}
+				graph[from] = append(graph[from], value)
 			}
 			return nil
 		})

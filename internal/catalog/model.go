@@ -83,3 +83,20 @@ type PortDescription struct {
 	Description string      `json:"description"`
 	DataType    ir.DataType `json:"data_type"`
 }
+
+// RuntimeContract is internal compiler metadata. It is intentionally absent
+// from NodeDescription so authors never select operation or contract versions.
+type RuntimeContract struct {
+	Kind                   NodeKind
+	OperationType          string
+	OperationVersion       uint32
+	DefaultExecutionPolicy ExecutionPolicyDefaults
+}
+
+type ExecutionPolicyDefaults struct {
+	MaxAttempts         uint32
+	MaxRecoveries       uint32
+	AttemptTimeoutMS    uint64
+	RetryBackoffMS      uint64
+	RetryableErrorCodes []string
+}

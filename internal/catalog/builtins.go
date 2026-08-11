@@ -18,6 +18,7 @@ var (
 func startContract() contract {
 	return contract{
 		revision: 1,
+		runtime:  controlRuntime("control.start"),
 		description: NodeDescription{
 			Type:        "start",
 			Kind:        KindControl,
@@ -37,6 +38,7 @@ func startContract() contract {
 func endContract() contract {
 	return contract{
 		revision: 1,
+		runtime:  controlRuntime("control.end"),
 		description: NodeDescription{
 			Type:        "end",
 			Kind:        KindControl,
@@ -58,6 +60,7 @@ func endContract() contract {
 func branchContract() contract {
 	return contract{
 		revision: 1,
+		runtime:  controlRuntime("control.branch"),
 		description: NodeDescription{
 			Type:        "branch",
 			Kind:        KindControl,
@@ -85,6 +88,7 @@ func branchContract() contract {
 func codeContract() contract {
 	return contract{
 		revision: 1,
+		runtime:  taskRuntime("task.python"),
 		description: NodeDescription{
 			Type:        "code",
 			Kind:        KindTask,
@@ -116,6 +120,7 @@ func httpContract() contract {
 	maximumStatus := int64(599)
 	return contract{
 		revision: 1,
+		runtime:  taskRuntime("task.http"),
 		description: NodeDescription{
 			Type:        "http",
 			Kind:        KindTask,
@@ -148,6 +153,7 @@ func httpContract() contract {
 func rpcContract() contract {
 	return contract{
 		revision: 1,
+		runtime:  taskRuntime("task.rpc"),
 		description: NodeDescription{
 			Type:        "rpc",
 			Kind:        KindTask,
@@ -232,12 +238,72 @@ func validateBranch(node ir.Node) []ir.Diagnostic {
 				if valueType.Valid() && valueType != ir.TypeObject {
 					return []ir.Diagnostic{branchCaseTypeDiagnostic(node, input, inputIndex, caseIndex, "case path is only valid when branch value is an object")}
 				}
-			} else if valueType.Valid() && !containsString(branchOperatorMatrix[valueType], operator) {
-				return []ir.Diagnostic{branchCaseTypeDiagnostic(node, input, inputIndex, caseIndex, "operator is incompatible with the branch value data_type")}
+				if !validPathComparison(operator, item["value"]) {
+					return []ir.Diagnostic{branchCaseTypeDiagnostic(node, input, inputIndex, caseIndex, "comparison value is incompatible with the path operator")}
+				}
+			} else if valueType.Valid() {
+				if !containsString(branchOperatorMatrix[valueType], operator) {
+					return []ir.Diagnostic{branchCaseTypeDiagnostic(node, input, inputIndex, caseIndex, "operator is incompatible with the branch value data_type")}
+				}
+				if !validBranchComparison(valueType, operator, item["value"]) {
+					return []ir.Diagnostic{branchCaseTypeDiagnostic(node, input, inputIndex, caseIndex, "comparison value is incompatible with the branch value data_type and operator")}
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func validBranchComparison(valueType ir.DataType, operator string, comparison any) bool {
+	comparisonType, valid := nestedDataType(comparison)
+	switch valueType {
+	case ir.TypeString:
+		return valid && comparisonType == ir.TypeString
+	case ir.TypeInteger, ir.TypeNumber:
+		return valid && (comparisonType == ir.TypeInteger || comparisonType == ir.TypeNumber)
+	case ir.TypeBoolean:
+		return valid && comparisonType == ir.TypeBoolean
+	case ir.TypeArray:
+		if operator == "contains" || operator == "not_contains" {
+			return true
+		}
+		return valid && comparisonType == ir.TypeArray
+	case ir.TypeObject:
+		if operator == "has_key" || operator == "not_has_key" {
+			return valid && comparisonType == ir.TypeString
+		}
+		return valid && comparisonType == ir.TypeObject
+	default:
+		return false
+	}
+}
+
+func validPathComparison(operator string, comparison any) bool {
+	comparisonType, valid := nestedDataType(comparison)
+	switch operator {
+	case "starts_with", "ends_with", "has_key", "not_has_key":
+		return valid && comparisonType == ir.TypeString
+	case "gt", "gte", "lt", "lte":
+		return valid && (comparisonType == ir.TypeInteger || comparisonType == ir.TypeNumber)
+	case "contains", "not_contains":
+		return true
+	case "eq", "neq":
+		return valid
+	default:
+		return false
+	}
+}
+
+func nestedDataType(value any) (ir.DataType, bool) {
+	if value == nil {
+		return "", false
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", false
+	}
+	_, dataType, err := ir.DecodeLiteral(raw)
+	return dataType, err == nil
 }
 
 func branchCaseTypeDiagnostic(node ir.Node, input ir.Input, inputIndex, caseIndex int, message string) ir.Diagnostic {
@@ -321,4 +387,18 @@ func mustJSON(value any) json.RawMessage {
 		panic(err)
 	}
 	return encoded
+}
+
+func controlRuntime(operationType string) RuntimeContract {
+	return RuntimeContract{Kind: KindControl, OperationType: operationType, OperationVersion: 1}
+}
+
+func taskRuntime(operationType string) RuntimeContract {
+	return RuntimeContract{
+		Kind: KindTask, OperationType: operationType, OperationVersion: 1,
+		DefaultExecutionPolicy: ExecutionPolicyDefaults{
+			MaxAttempts: 1, MaxRecoveries: 3, AttemptTimeoutMS: 30_000, RetryBackoffMS: 1_000,
+			RetryableErrorCodes: []string{},
+		},
+	}
 }

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evalfrog.dev/contracts/source-map/v1/schema.json",
+  "title": "EvalFrog Source Map v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_map_version", "nodes", "edges", "fields"],
+  "properties": {
+    "source_map_version": { "const": "1" },
+    "nodes": {
+      "type": "object",
+      "propertyNames": { "pattern": "^xn_[0-9a-f]{24}$" },
+      "additionalProperties": { "$ref": "#/$defs/logicalId" }
+    },
+    "edges": {
+      "type": "object",
+      "propertyNames": { "pattern": "^xe_[0-9a-f]{24}$" },
+      "additionalProperties": { "$ref": "#/$defs/logicalId" }
+    },
+    "fields": {
+      "type": "object",
+      "propertyNames": { "pattern": "^xn_[0-9a-f]{24}$" },
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "additionalProperties": { "type": "string", "pattern": "^(inputs|outputs)\\.[A-Za-z]", "maxLength": 512 }
+      }
+    }
+  },
+  "$defs": {
+    "logicalId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }
+  }
+}
