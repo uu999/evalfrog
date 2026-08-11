@@ -1,0 +1,27 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    { "id": "8c6c0d45-0acf-49c6-bad9-672f33b16963", "type": "start", "title": "Start", "inputs": [], "outputs": [{ "name": "workflow_input", "data_type": "object" }] },
+    {
+      "id": "5072cfee-b86b-4f67-bf2d-9d52a23661e7",
+      "type": "rpc",
+      "title": "Create invoice",
+      "inputs": [
+        { "name": "service_ref", "data_type": "string", "source": "literal", "value": "invoice_service" },
+        { "name": "operation", "data_type": "string", "source": "literal", "value": "CreateInvoice" },
+        { "name": "request", "data_type": "object", "source": "ref", "ref_node": "8c6c0d45-0acf-49c6-bad9-672f33b16963", "ref_output": "workflow_input" }
+      ],
+      "outputs": [{ "name": "response", "data_type": "object" }]
+    },
+    { "id": "c257c483-e3e0-41bd-a25b-6d76d48d5d50", "type": "end", "title": "End", "inputs": [{ "name": "workflow_output", "data_type": "object", "source": "ref", "ref_node": "5072cfee-b86b-4f67-bf2d-9d52a23661e7", "ref_output": "response" }], "outputs": [] }
+  ],
+  "edges": [
+    { "id": "8bc3b455-0689-4d14-bc03-3db03a9bfc64", "source": "8c6c0d45-0acf-49c6-bad9-672f33b16963", "target": "5072cfee-b86b-4f67-bf2d-9d52a23661e7" },
+    { "id": "662e1906-4dc2-4f88-b43b-85934380d84c", "source": "5072cfee-b86b-4f67-bf2d-9d52a23661e7", "target": "c257c483-e3e0-41bd-a25b-6d76d48d5d50" }
+  ],
+  "layout": {
+    "8c6c0d45-0acf-49c6-bad9-672f33b16963": { "x": 0, "y": 0 },
+    "5072cfee-b86b-4f67-bf2d-9d52a23661e7": { "x": 250.5, "y": -10 },
+    "c257c483-e3e0-41bd-a25b-6d76d48d5d50": { "x": 500, "y": 0 }
+  }
+}

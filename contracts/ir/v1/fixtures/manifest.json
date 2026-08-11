@@ -1,0 +1,26 @@
+{
+  "valid": [
+    "valid/agent-semantic.json",
+    "valid/web-random.json",
+    "valid/branch.json",
+    "valid/literal-types.json"
+  ],
+  "canonical": [
+    { "input": "canonical/key-order.input.json", "golden": "canonical/key-order.golden.json" }
+  ],
+  "invalid": [
+    { "file": "invalid/literal-and-ref.json", "schema_valid": false, "stage": "validate", "codes": ["INPUT_SOURCE_FIELDS_INVALID"] },
+    { "file": "invalid/duplicate-input.json", "schema_valid": true, "stage": "validate", "codes": ["INPUT_NAME_DUPLICATE"] },
+    { "file": "invalid/duplicate-output.json", "schema_valid": true, "stage": "validate", "codes": ["OUTPUT_NAME_DUPLICATE"] },
+    { "file": "invalid/edge-missing-node.json", "schema_valid": true, "stage": "validate", "codes": ["EDGE_TARGET_NOT_FOUND"] },
+    { "file": "invalid/layout-orphan.json", "schema_valid": true, "stage": "validate", "codes": ["LAYOUT_NODE_NOT_FOUND"] },
+    { "file": "invalid/layout-missing.json", "schema_valid": true, "stage": "validate", "codes": ["LAYOUT_POSITION_MISSING"] },
+    { "file": "invalid/logical-id.json", "schema_valid": false, "stage": "validate", "codes": ["LOGICAL_NODE_ID_INVALID"] },
+    { "file": "invalid/literal-type-mismatch.json", "schema_valid": false, "stage": "validate", "codes": ["LITERAL_TYPE_MISMATCH"] },
+    { "file": "invalid/integer-out-of-range.json", "schema_valid": false, "stage": "validate", "codes": ["INTEGER_OUT_OF_RANGE"] },
+    { "file": "invalid/ref-type-mismatch.json", "schema_valid": true, "stage": "validate", "codes": ["REF_TYPE_MISMATCH"] },
+    { "file": "invalid/forbidden-node-version.json", "schema_valid": false, "stage": "parse", "codes": ["IR_SHELL_INVALID"] },
+    { "file": "invalid/duplicate-key.json", "schema_valid": true, "stage": "parse", "codes": ["JSON_DUPLICATE_KEY"] },
+    { "file": "invalid/unpaired-surrogate.json", "schema_valid": true, "stage": "parse", "codes": ["INVALID_UNICODE"] }
+  ]
+}

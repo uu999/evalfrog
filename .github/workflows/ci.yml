@@ -12,8 +12,8 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -22,11 +22,17 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
       - name: Formatting
-        run: test -z "$(gofmt -l cmd internal tests)"
+        run: test -z "$(gofmt -l cmd contracts internal tests)"
       - name: Vet
         run: go vet ./...
       - name: Unit and architecture tests
         run: go test ./...
+      - name: IR contract repeatability
+        run: go test -count=20 ./contracts/ir ./internal/ir ./internal/catalog
+      - name: Bounded IR fuzzing
+        run: |
+          go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
+          go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
       - name: Race detector
         run: go test -race ./...
       - name: Build four executables
@@ -44,8 +50,8 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

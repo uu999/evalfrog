@@ -7,6 +7,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/twmb/franz-go v1.21.5
 	gopkg.in/yaml.v3 v3.0.1
 )

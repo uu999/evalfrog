@@ -1,0 +1,16 @@
+{
+  "ir_version": "1",
+  "nodes": [
+    { "id": "start", "type": "start", "title": "开始", "inputs": [], "outputs": [{ "name": "workflow_input", "data_type": "object" }] },
+    {
+      "id": "code",
+      "type": "code",
+      "title": "代码",
+      "inputs": [{ "name": "source_code", "data_type": "string", "source": "literal", "value": "def main(inputs): return {}", "ref_node": "start", "ref_output": "workflow_input" }],
+      "outputs": []
+    },
+    { "id": "end", "type": "end", "title": "结束", "inputs": [{ "name": "workflow_output", "data_type": "object", "source": "literal", "value": {} }], "outputs": [] }
+  ],
+  "edges": [{ "id": "start_to_code", "source": "start", "target": "code" }, { "id": "code_to_end", "source": "code", "target": "end" }],
+  "layout": { "start": { "x": 0, "y": 0 }, "code": { "x": 1, "y": 0 }, "end": { "x": 2, "y": 0 } }
+}

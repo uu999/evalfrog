@@ -1,10 +1,17 @@
-.PHONY: build test test-race vet fmt-check check dev down
+.PHONY: build test test-contract test-fuzz test-race vet fmt-check check dev down
 
 build:
 	go build ./cmd/...
 
 test:
 	go test ./...
+
+test-contract:
+	go test -count=20 ./contracts/ir ./internal/ir ./internal/catalog
+
+test-fuzz:
+	go test ./internal/ir -run='^$$' -fuzz=FuzzParser -fuzztime=5s
+	go test ./internal/ir -run='^$$' -fuzz=FuzzLogicalID -fuzztime=5s
 
 test-race:
 	go test -race ./...
@@ -13,9 +20,9 @@ vet:
 	go vet ./...
 
 fmt-check:
-	@test -z "$$(gofmt -l cmd internal tests)" || (gofmt -l cmd internal tests && exit 1)
+	@test -z "$$(gofmt -l cmd contracts internal tests)" || (gofmt -l cmd contracts internal tests && exit 1)
 
-check: fmt-check vet test test-race build
+check: fmt-check vet test test-contract test-race build
 
 dev:
 	./scripts/dev.sh
