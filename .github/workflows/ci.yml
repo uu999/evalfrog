@@ -27,8 +27,8 @@ jobs:
         run: go vet ./...
       - name: Unit and architecture tests
         run: go test ./...
-      - name: Authoring, runtime and definition contract repeatability
-        run: go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi
+      - name: Authoring, definition and runtime contract repeatability
+        run: go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine
       - name: Bounded IR fuzzing
         run: |
           go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s

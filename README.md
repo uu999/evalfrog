@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M3 Access、Managed Resources 与 Definition 生命周期已实现，下一阶段为 M4 Runtime Domain 与 Engine**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M4 Runtime Domain 与 Engine 已实现，下一阶段为 M5 Runtime PostgreSQL、Outbox/Inbox 与事件驱动推进**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -109,7 +109,7 @@ M2 已实现不依赖数据库、Redis、Kafka 或 HTTP Adapter 的确定性编�
 - `control.start/end/branch@1` 与 `task.python/http/rpc@1` Operation 编译；
 - Runtime DSL 自校验和执行前全量 Operation Compatibility Check。
 
-编译器输入中的 Resource Bindings 在 M3 已由 Resources 模块完成作者与 Project Execution Identity 双重授权后解析。M2 本身仍保持纯函数边界，不访问数据库、Redis 或 Kafka；Runtime Engine 尚未实现。
+编译器输入中的 Resource Bindings 在 M3 已由 Resources 模块完成作者与 Project Execution Identity 双重授权后解析。M2 本身仍保持纯函数边界，不访问数据库、Redis 或 Kafka；M4 Runtime Engine 只消费该层生成的不可变 DSL/Snapshot。
 
 ## M3 Definition 生命周期
 
@@ -125,12 +125,27 @@ M3 已将作者态定义生命周期接入真实 PostgreSQL：
 
 M3 的 Test 接口只生成可复用的不可变 Test Snapshot，不创建 Workflow Run；真正的 Test Run 与 Production Run 将从 M4-M5 的 Runtime 状态机和持久化接通。
 
+## M4 Runtime Domain 与 Engine
+
+M4 已在不依赖 PostgreSQL、Redis、Kafka 或真实 Worker 的条件下证明运行语义：
+
+- Workflow Run、Node Run、Node Attempt 的封闭状态模型、State Version 与全部合法/非法迁移；
+- CreateRun 对 Test/Production Definition Source 和 Snapshot ID/Definition Hash 的不可变绑定；
+- Start/End/Branch Control Node 无 Attempt，Task Node 通过 Effective Attempt 暴露唯一有效 Output；
+- 排他 Branch、全部六类 JSON Operator、并行路径、隐式 OR-Join 和唯一 `skipped` 语义；
+- 业务 Retry 与基础设施 Recovery 独立计数，重复、乱序、迟到 Result 和 RetryDue 幂等收敛；
+- Fail-Fast、首个 Termination Intent 胜出、Cancel/Deadline 和 End/Output/Run Success 原子语义；
+- 结构化 Runtime Failure 保存 Run、Snapshot、Definition、Execution Node、Attempt 与 DSL Field 坐标；
+- Deterministic In-Memory Harness 跑通 20 个代表性 Workflow 和 100 个随机合法 DAG Property Case。
+
+M4 没有创建 Runtime 数据库表、External Run API、Outbox/Inbox、Scheduler、Kafka Task 或 Worker 执行。M5 将把同一领域操作映射到 PostgreSQL Transaction/CAS 和可恢复事件循环。
+
 ## 开发检查
 
 ```bash
 go test ./...
 go test -race ./...
-go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi
+go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine
 go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
 go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
 go vet ./...
@@ -329,4 +344,4 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。M1 已冻结作者态 IR 与 Node Catalog Contract；M2 已实现确定性 Compiler、DSL、Source Map 和 Control Graph 静态校验；M3 已实现 Access、Managed Resources、Definition PostgreSQL 持久化与首批 Draft/Publish API。Runtime Engine、真实 Workflow Run、Scheduler、Kafka Task Dispatch 与 Worker 节点执行仍是后续阶段，README 不把计划能力描述成当前成果。
+M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。M1 已冻结作者态 IR 与 Node Catalog Contract；M2 已实现确定性 Compiler、DSL、Source Map 和 Control Graph 静态校验；M3 已实现 Access、Managed Resources、Definition PostgreSQL 持久化与首批 Draft/Publish API；M4 已实现纯领域 Runtime 状态机和确定性 Engine。Runtime PostgreSQL、External Run API、Outbox/Inbox、Scheduler、Kafka Task Dispatch 与 Worker 节点执行仍是后续阶段，README 不把计划能力描述成当前成果。
