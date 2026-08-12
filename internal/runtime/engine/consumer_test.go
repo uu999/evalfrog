@@ -82,6 +82,17 @@ func TestConsumerInitializesPendingRunAndDeduplicatesInbox(t *testing.T) {
 	}
 }
 
+func TestConsumerIgnoresRunCreatedAfterInitialization(t *testing.T) {
+	harness := newTestHarness(t, linearDocument(1))
+	state := harness.Engine.SnapshotState()
+	tx := &fakeRunTx{accepted: true, run: state.Run}
+	consumer, _ := NewConsumer(&fakeTransactions{tx})
+	event := testRuntimeEvent(eventing.RunCreated, state.Run.ID, state.Run.ID, state.Run.CreatedAt)
+	if err := consumer.Consume(context.Background(), event); err != nil || tx.initialized || tx.failedInit {
+		t.Fatalf("initialized=%v failedInit=%v err=%v", tx.initialized, tx.failedInit, err)
+	}
+}
+
 func TestConsumerFailsUnsupportedInitializationAndRollsBackMissingFact(t *testing.T) {
 	harness := newTestHarness(t, linearDocument(1))
 	pending, _ := runtime.NewWorkflowRun(runtime.CreateRunCommand{

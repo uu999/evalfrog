@@ -81,6 +81,9 @@ func TestCoordinatorRejectsInvalidCoordinatesAndResults(t *testing.T) {
 	if _, err := coordinator.Heartbeat(context.Background(), HeartbeatCommand{}); err == nil {
 		t.Fatal("invalid heartbeat accepted")
 	}
+	if _, err := coordinator.Complete(context.Background(), CompleteCommand{}); err == nil {
+		t.Fatal("invalid completion coordinate accepted")
+	}
 	base := CompleteCommand{ProjectID: "p", RunID: "r", AttemptID: "a", AttemptSequence: 1, LeaseToken: "l", FencingToken: 1, TraceID: "t"}
 	for _, result := range []runtime.AttemptResult{
 		{State: runtime.AttemptRunning},
@@ -99,6 +102,27 @@ func TestCoordinatorRejectsInvalidCoordinatesAndResults(t *testing.T) {
 	}
 	if _, err := NewCoordinator(nil, fixedIDs{"id"}, clock.NewFake(time.Now())); err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("dependency error=%v", err)
+	}
+}
+
+func TestCoordinatorNormalizesNilSuccessfulOutputsBeforePersistence(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{completeOK: true}
+	coordinator, err := NewCoordinator(repository, fixedIDs{"event"}, clock.NewFake(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := CompleteCommand{
+		ProjectID: "p", RunID: "r", AttemptID: "a", AttemptSequence: 1,
+		LeaseToken: "lease", FencingToken: 1, TraceID: "trace",
+		Result: runtime.AttemptResult{State: runtime.AttemptSucceeded},
+	}
+	applied, err := coordinator.Complete(context.Background(), command)
+	if err != nil || !applied {
+		t.Fatalf("applied=%v err=%v", applied, err)
+	}
+	if repository.complete.Result.Outputs == nil || len(repository.complete.Result.Outputs) != 0 {
+		t.Fatalf("persisted outputs=%v", repository.complete.Result.Outputs)
 	}
 }
 

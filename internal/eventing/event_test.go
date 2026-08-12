@@ -35,6 +35,12 @@ func TestRuntimeEventContractIsStrictVersionedAndLightweight(t *testing.T) {
 			t.Fatalf("valid %s rejected: %v", eventType, err)
 		}
 	}
+	wrongAggregate := event
+	wrongAggregate.EventType = AttemptCompleted
+	wrongAggregate.AggregateID = "attempt"
+	if err := wrongAggregate.Validate(); err == nil {
+		t.Fatal("attempt event with workflow-run aggregate accepted")
+	}
 	invalid := event
 	invalid.EventType = "unknown"
 	if err := invalid.Validate(); err == nil {
