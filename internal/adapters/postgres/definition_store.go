@@ -179,10 +179,37 @@ func (store *Store) StoreTestSnapshot(ctx context.Context, snapshot definition.E
 	if err != nil {
 		return definition.ExecutionSnapshot{}, err
 	}
+	if snapshot.OriginKind != definition.SnapshotOriginDraftTest || snapshot.OriginID == "" {
+		return definition.ExecutionSnapshot{}, fmt.Errorf("test snapshot requires its immutable draft revision identity")
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO workflow_draft_test_snapshots (
+			project_id, workflow_id, draft_revision_id, snapshot_id
+		) VALUES ($1,$2,$3,$4)
+		ON CONFLICT DO NOTHING`, snapshot.ProjectID, snapshot.WorkflowID, snapshot.OriginID, stored.ID); err != nil {
+		return definition.ExecutionSnapshot{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return definition.ExecutionSnapshot{}, err
 	}
 	return stored, nil
+}
+
+func (store *Store) ResolveDraftTestSnapshot(ctx context.Context, projectID, workflowID string, revisionNumber int64) (definition.ExecutionSnapshot, error) {
+	return scanSnapshot(store.pool.QueryRow(ctx, `
+		SELECT s.snapshot_id::text, s.project_id::text, s.workflow_id::text, s.origin_kind,
+		       s.origin_id::text, s.ir_json, s.dsl_json, s.source_map_json, s.compiler_manifest_json,
+		       s.ir_hash, s.dsl_hash, s.source_map_hash, s.definition_hash, s.created_at
+		FROM workflow_draft_revisions r
+		JOIN workflow_draft_test_snapshots b
+		  ON b.project_id=r.project_id AND b.workflow_id=r.workflow_id
+		 AND b.draft_revision_id=r.draft_revision_id
+		JOIN workflow_execution_snapshots s
+		  ON s.project_id=b.project_id AND s.workflow_id=b.workflow_id AND s.snapshot_id=b.snapshot_id
+		WHERE s.project_id=$1 AND s.workflow_id=$2
+		  AND r.revision_number=$3
+		ORDER BY b.created_at DESC, s.snapshot_id DESC
+		LIMIT 1`, projectID, workflowID, revisionNumber))
 }
 
 func (store *Store) FindPublishedByIdempotency(ctx context.Context, projectID, workflowID, key, requestHash string) (definition.PublishedVersion, definition.ExecutionSnapshot, bool, error) {

@@ -73,25 +73,25 @@ const (
 )
 
 type TerminationIntent struct {
-	Kind        TerminationKind
-	RequestedAt time.Time
-	Cause       Failure
+	Kind        TerminationKind `json:"kind"`
+	RequestedAt time.Time       `json:"requested_at"`
+	Cause       Failure         `json:"cause"`
 }
 
 type Failure struct {
-	Code            string
-	Phase           string
-	Retryable       bool
-	RunID           string
-	SnapshotID      string
-	DefinitionHash  string
-	ExecutionNodeID string
-	DSLField        string
-	ExecutionEdgeID string
-	AttemptID       string
-	Expected        string
-	Actual          string
-	Message         string
+	Code            string `json:"code"`
+	Phase           string `json:"phase"`
+	Retryable       bool   `json:"retryable"`
+	RunID           string `json:"run_id"`
+	SnapshotID      string `json:"snapshot_id"`
+	DefinitionHash  string `json:"definition_hash"`
+	ExecutionNodeID string `json:"execution_node_id,omitempty"`
+	DSLField        string `json:"dsl_field,omitempty"`
+	ExecutionEdgeID string `json:"execution_edge_id,omitempty"`
+	AttemptID       string `json:"attempt_id,omitempty"`
+	Expected        string `json:"expected,omitempty"`
+	Actual          string `json:"actual,omitempty"`
+	Message         string `json:"message"`
 }
 
 type WorkflowRun struct {
@@ -181,6 +181,18 @@ func (run *WorkflowRun) Start(executionNodeIDs []string) error {
 	}
 	run.nodeRunCount = uint32(len(executionNodeIDs))
 	run.executionNodeIDs = identities
+	return nil
+}
+
+// FailInitialization is the only legal pending -> failed path. It records a
+// deterministic compatibility/DSL failure before any Node Run is exposed.
+func (run *WorkflowRun) FailInitialization(failure Failure, at time.Time) error {
+	if run.state != RunPending || run.termination != nil || failure.Code == "" || at.IsZero() || at.Before(run.createdAt) {
+		return fmt.Errorf("run initialization failure is invalid")
+	}
+	run.termination = &TerminationIntent{Kind: TerminationFailed, RequestedAt: at, Cause: failure}
+	run.state = RunFailed
+	run.stateVersion++
 	return nil
 }
 
@@ -532,10 +544,10 @@ func (state AttemptState) Terminal() bool {
 }
 
 type AttemptResult struct {
-	State     AttemptState
-	Outputs   map[string]json.RawMessage
-	ErrorCode string
-	Message   string
+	State     AttemptState               `json:"state"`
+	Outputs   map[string]json.RawMessage `json:"outputs,omitempty"`
+	ErrorCode string                     `json:"error_code,omitempty"`
+	Message   string                     `json:"message,omitempty"`
 }
 
 func (result AttemptResult) Equal(other AttemptResult) bool {

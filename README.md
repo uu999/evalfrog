@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M4 Runtime Domain 与 Engine 已实现，下一阶段为 M5 Runtime PostgreSQL、Outbox/Inbox 与事件驱动推进**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M5 Runtime PostgreSQL、Outbox/Inbox 与事件驱动推进已实现，下一阶段为 M6 Project 公平 Scheduler 与 Scheduling Redis**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -140,12 +140,25 @@ M4 已在不依赖 PostgreSQL、Redis、Kafka 或真实 Worker 的条件下证�
 
 M4 没有创建 Runtime 数据库表、External Run API、Outbox/Inbox、Scheduler、Kafka Task 或 Worker 执行。M5 将把同一领域操作映射到 PostgreSQL Transaction/CAS 和可恢复事件循环。
 
+## M5 Runtime PostgreSQL 与事件驱动推进
+
+M5 已将 M4 Aggregate 映射到真实 PostgreSQL 权威状态与可恢复事件循环：
+
+- [Runtime Migration](./migrations/000002_m5_runtime_eventing.up.sql) 提供 Run、Node Run、Attempt、Output Candidate、Outbox、Inbox、Idempotency 与确定访问路径索引；
+- TestDraft 明确绑定 `draft_revision + snapshot_id`，Production CreateRun 在事务内解析 Active Published Version；两者只创建 Pending Run 与 RunCreated Outbox；
+- Engine Consumer 通过 Inbox、Run 行锁、受校验 Aggregate Restore 与 State Version CAS 原子初始化整张图或推进状态；
+- Attempt Coordinator 的 Claim、Heartbeat、Complete 与 Lost 使用 Lease/Fencing；Attempt 终态、Output Candidate、Completion Outbox 同事务；
+- Outbox Relay 使用 `FOR UPDATE SKIP LOCKED` 与有期限 Claim，可在发布前或发布后崩溃后恢复；重复发布由 Inbox 收敛；
+- `node_output_values` 保存候选值，只有 `node_runs.effective_attempt_id` 被 Engine 接受后才对下游有效。
+
+M5 只定义版本化 Runtime Event DTO 与 Publisher Port，尚未连接真实 Kafka Broker；也未实现 `ready → queued + Attempt + NodeTask Outbox`，该原子派发边界属于 M6。External Run HTTP API、Worker Transport 和 Execution Context Cache-Aside 仍分别属于后续里程碑。
+
 ## 开发检查
 
 ```bash
 go test ./...
 go test -race ./...
-go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine
+go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine ./internal/runtime/attempt ./internal/eventing
 go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
 go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
 go vet ./...

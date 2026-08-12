@@ -65,11 +65,11 @@ func New(snapshot Snapshot, command runtime.CreateRunCommand, contract dsl.Contr
 		return nil, &Error{Code: "RUNTIME_DSL_INVALID", Cause: err}
 	}
 	snapshot.DSL = document
-	if issues := contract.Validate(snapshot.DSL); len(issues) > 0 {
-		return nil, &Error{Code: "RUNTIME_DSL_INVALID", NodeID: string(issues[0].NodeID), Field: issues[0].Field}
-	}
 	if issues := compatibility.CheckAll(snapshot.DSL); len(issues) > 0 {
 		return nil, &Error{Code: issues[0].Code, NodeID: string(issues[0].NodeID), Field: issues[0].Field}
+	}
+	if issues := contract.Validate(snapshot.DSL); len(issues) > 0 {
+		return nil, &Error{Code: "RUNTIME_DSL_INVALID", NodeID: string(issues[0].NodeID), Field: issues[0].Field}
 	}
 	run, err := runtime.NewWorkflowRun(command)
 	if err != nil {

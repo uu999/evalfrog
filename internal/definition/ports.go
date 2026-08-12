@@ -28,6 +28,7 @@ type Repository interface {
 	GetDraftRevision(context.Context, string, string, int64) (DraftRevision, error)
 	SaveDraft(context.Context, SaveDraftRecord) (DraftRevision, error)
 	StoreTestSnapshot(context.Context, ExecutionSnapshot) (ExecutionSnapshot, error)
+	ResolveDraftTestSnapshot(context.Context, string, string, int64) (ExecutionSnapshot, error)
 	FindPublishedByIdempotency(context.Context, string, string, string, string) (PublishedVersion, ExecutionSnapshot, bool, error)
 	Publish(context.Context, PublishRecord) (PublishedVersion, ExecutionSnapshot, error)
 	Rollback(context.Context, RollbackRecord) (PublishedVersion, error)

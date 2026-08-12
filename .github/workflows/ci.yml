@@ -28,7 +28,28 @@ jobs:
       - name: Unit and architecture tests
         run: go test ./...
       - name: Authoring, definition and runtime contract repeatability
-        run: go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine
+        run: go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine ./internal/runtime/attempt ./internal/eventing
+      - name: Core package coverage gate
+        shell: bash
+        run: |
+          check_coverage() {
+            package="$1"
+            profile="$(mktemp)"
+            go test -covermode=atomic -coverprofile="$profile" "$package"
+            actual="$(go tool cover -func="$profile" | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+            rm -f "$profile"
+            awk -v package="$package" -v actual="$actual" 'BEGIN {
+              if ((actual + 0) < 90) {
+                printf "%s coverage %s%% is below 90%%\n", package, actual
+                exit 1
+              }
+              printf "%s coverage %s%%\n", package, actual
+            }'
+          }
+          check_coverage ./internal/compiler
+          check_coverage ./internal/runtime/engine
+          check_coverage ./internal/runtime/attempt
+          check_coverage ./internal/eventing
       - name: Bounded IR fuzzing
         run: |
           go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
@@ -61,7 +82,7 @@ jobs:
         run: docker compose -f deployments/compose.yaml up -d --build --wait
       - name: CLI doctor
         run: docker compose -f deployments/compose.yaml run --build --rm --no-deps evalfrog-cli doctor --profile local --config-dir /app/configs
-      - name: M3 PostgreSQL integration tests
+      - name: PostgreSQL integration tests
         run: go test -tags=integration ./tests/integration
       - name: Stop M0 stack
         if: always()
