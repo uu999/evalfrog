@@ -54,6 +54,9 @@ func Validate(graph Graph) []Violation {
 			if strings.HasPrefix(fromRelative, "internal/worker/") && strings.HasPrefix(toRelative, "internal/adapters/postgres") {
 				violations = append(violations, Violation{from, imported, "workers must not have PostgreSQL access"})
 			}
+			if strings.HasPrefix(fromRelative, "internal/adapters/httpapi") && strings.HasPrefix(toRelative, "internal/adapters/postgres") {
+				violations = append(violations, Violation{from, imported, "HTTP API handlers must call application ports instead of PostgreSQL repositories"})
+			}
 			if strings.HasPrefix(fromRelative, "internal/runtime/") && hasAnyPrefix(toRelative, []string{"internal/ir", "internal/definition", "internal/catalog"}) {
 				violations = append(violations, Violation{from, imported, "runtime executes immutable DSL and must not read authoring models"})
 			}
