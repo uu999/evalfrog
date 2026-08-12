@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M6 Project 公平 Scheduler、Scheduling Redis 与原子 Task Dispatch 已实现，下一阶段为 M7 Kafka、Worker Runtime、Attempt API 与 Execution Context**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M7 Kafka 分布式执行骨架、通用 Worker Runtime、Worker API、Execution Context Cache-Aside 与 Lease Recovery 已实现，下一阶段为 M8 HTTP/RPC Builtin Executor**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -151,7 +151,7 @@ M5 已将 M4 Aggregate 映射到真实 PostgreSQL 权威状态与可恢复事件
 - Outbox Relay 使用 `FOR UPDATE SKIP LOCKED` 与有期限 Claim，可在发布前或发布后崩溃后恢复；重复发布由 Inbox 收敛；
 - `node_output_values` 保存候选值，只有 `node_runs.effective_attempt_id` 被 Engine 接受后才对下游有效。
 
-M5 只定义版本化 Runtime Event DTO 与 Publisher Port，尚未连接真实 Kafka Broker。M6 已补齐 `ready → queued + Attempt + Node Task Outbox` 原子派发；真实 Kafka Task Publisher、Worker Transport、动态 Worker 健康槽采集和 Execution Context Cache-Aside 仍属于 M7。
+M5 定义的 Runtime Event DTO 与 Publisher Port 已在 M7 接入真实 Kafka；M6 的 `ready → queued + Attempt + Node Task Outbox` 也已通过 Task Relay 进入 Worker 链路。
 
 ## M6 Project 公平 Scheduler
 
@@ -166,14 +166,29 @@ M6 已把 Scheduler 作为 Control Plane 内独立逻辑模块接入生产生命
 - PostgreSQL 事务原子完成 `ready → queued + Attempt + node_task_outbox`，数据库 CAS 是最终裁决；
 - Redis 为空、超时或丢失时暂停新准入，Balancer 从 PostgreSQL Ready/Queued/Running 重建后才重新开放。
 
-M6 的 `node_task_outbox` 是 M7 Kafka Publisher 的可靠输入，本阶段不会提前把 Task 发到 Kafka，也不会让 Worker 消费它。
+M6 的 `node_task_outbox` 是 M7 Kafka Task Relay 的可靠输入；公平准入仍在 Kafka 之前完成，Kafka 不重新排序 Project。
+
+## M7 Kafka 与 Worker Runtime
+
+M7 已跑通 `Scheduler Outbox → Kafka → Worker → Attempt Coordinator → Runtime Event → Engine` 的分布式协议骨架：
+
+- Task 与 Runtime Event 使用独立 v1 JSON Contract，分别以 `attempt_id`、`run_id` 为 Kafka Key；Envelope 限制 64 KiB，不携带 DSL、Execution Context、Output 或 Secret；
+- Task/Runtime Outbox Relay 以 PostgreSQL Claim Lease 和 `SKIP LOCKED` 支持多副本至少一次发布；Poison Message 进入 DLQ，可识别 Attempt 的坏 Task 会先形成明确失败；
+- 通用 Worker Runtime 只在本地 Slot 空闲时 Poll；数据库 Claim 成功后立即 ACK，执行和 ACK 解耦，Worker 崩溃由 Lease Reaper 标记 Lost；
+- Claim/Heartbeat/Complete/LoadExecutionContext 使用版本化内部 HTTP/JSON API，Worker 镜像和依赖规则均不包含 PostgreSQL Client；
+- Execution Context Gateway 只读装配不可变 Operation、Run Input、Resolved Input 与 Effective Upstream Output；Cache Redis Hit/Miss/Timeout/坏值均回源 PostgreSQL；Context 基础设施故障由 Lease Recovery 接管，不消耗业务重试；
+- Worker 启动和注册必须提供 Resource Class 完整能力集，Scheduling Redis 只统计匹配当前能力指纹且 TTL 有效的 Slot；
+- Kafka Consumer 在 `Poll → Claim/Inbox → ACK` 短窗口内阻塞 Rebalance，ACK 后立即释放，节点长时间执行不会阻塞分区再均衡；
+- 真实 PostgreSQL、Scheduling Redis、故障 Cache Redis 与 Kafka 集成测试验证两个 Control Plane API 副本、两个 Worker/Engine Consumer 副本、重复投递、Lease 过期、Lost/Recovery 和旧 Fencing Result 拒绝。
+
+M7 只启用 local/test Echo Executor 来证明协议；`production-default` 会拒绝以测试 Executor 启动。真正的 HTTP/RPC 执行和 Managed Resource 运行身份属于 M8，Python Per-Attempt Sandbox 属于 M9。
 
 ## 开发检查
 
 ```bash
 go test ./...
 go test -race ./...
-go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine ./internal/runtime/attempt ./internal/eventing ./internal/scheduling
+go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./contracts/messages ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/adapters/workerapi ./internal/runtime ./internal/runtime/engine ./internal/runtime/attempt ./internal/runtime/context ./internal/eventing ./internal/recovery ./internal/scheduling ./internal/worker/runtime
 go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
 go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
 go vet ./...
@@ -372,4 +387,4 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0 已提供四个可构建入口、三套严格配置 Profile、Local Compose、健康检查、Migration Runner、基础可观测性与依赖护栏。M1 已冻结作者态 IR 与 Node Catalog Contract；M2 已实现确定性 Compiler、DSL、Source Map 和 Control Graph 静态校验；M3 已实现 Access、Managed Resources、Definition PostgreSQL 持久化与首批 Draft/Publish API；M4 已实现纯领域 Runtime 状态机和确定性 Engine。Runtime PostgreSQL、External Run API、Outbox/Inbox、Scheduler、Kafka Task Dispatch 与 Worker 节点执行仍是后续阶段，README 不把计划能力描述成当前成果。
+M0-M7 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis，以及 Kafka/Worker 分布式执行骨架。当前 Worker 使用仅限 local/test 的协议测试 Executor；M8-M10 才交付真实 HTTP/RPC、Python Sandbox、完整 External Run API、CLI 与 Web 闭环，README 不把这些计划能力描述成当前成果。

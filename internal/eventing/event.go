@@ -66,15 +66,29 @@ func (event RuntimeEvent) MarshalJSONMessage() ([]byte, error) {
 	if err := event.Validate(); err != nil {
 		return nil, err
 	}
-	return json.Marshal(event)
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > EnvelopeMaxBytes {
+		return nil, fmt.Errorf("runtime event envelope exceeds %d bytes", EnvelopeMaxBytes)
+	}
+	return payload, nil
 }
 
 func ParseRuntimeEvent(payload []byte) (RuntimeEvent, error) {
+	if len(payload) == 0 || len(payload) > EnvelopeMaxBytes {
+		return RuntimeEvent{}, fmt.Errorf("runtime event envelope size must be in [1,%d]", EnvelopeMaxBytes)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var event RuntimeEvent
 	if err := decoder.Decode(&event); err != nil {
 		return RuntimeEvent{}, fmt.Errorf("decode runtime event: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return RuntimeEvent{}, fmt.Errorf("runtime event contains trailing JSON")
 	}
 	if err := event.Validate(); err != nil {
 		return RuntimeEvent{}, err
@@ -122,6 +136,10 @@ func (relay Relay) RelayOnce(ctx context.Context) (int, error) {
 	}
 	published := 0
 	for _, message := range claimed {
+		if err := message.Event.Validate(); err != nil {
+			_ = relay.repository.ReleaseOutboxClaim(ctx, message.Event.EventID, message.ClaimToken, relay.retryDelay)
+			return published, err
+		}
 		if err := relay.publisher.PublishRuntimeEvent(ctx, message.Event); err != nil {
 			_ = relay.repository.ReleaseOutboxClaim(ctx, message.Event.EventID, message.ClaimToken, relay.retryDelay)
 			return published, err

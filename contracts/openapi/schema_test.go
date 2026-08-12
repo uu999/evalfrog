@@ -37,3 +37,23 @@ func TestM3ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 		}
 	}
 }
+
+func TestM7WorkerContractContainsOnlyInternalCoordinationSurface(t *testing.T) {
+	raw, err := os.ReadFile("worker-v1.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err = yaml.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	paths, ok := document["paths"].(map[string]any)
+	if !ok || len(paths) != 5 {
+		t.Fatalf("unexpected worker paths: %#v", document["paths"])
+	}
+	for path := range paths {
+		if !strings.HasPrefix(path, "/internal/v1/") {
+			t.Fatalf("worker operation escaped internal boundary: %s", path)
+		}
+	}
+}

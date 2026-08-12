@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uu999/evalfrog/internal/dsl"
 	"github.com/uu999/evalfrog/internal/platform/clock"
 	"github.com/uu999/evalfrog/internal/runtime"
+	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
 type fixedIDs struct{ value string }
@@ -51,7 +53,8 @@ func TestCoordinatorValidatesAndCoordinatesLeaseOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := ClaimCommand{ProjectID: "p", RunID: "r", AttemptID: "a", AttemptSequence: 1, WorkerID: "w", ExecutorBuild: "b", LeaseDuration: time.Minute}
+	claim := validClaim()
+	claim.LeaseDuration = time.Minute
 	lease, err := coordinator.Claim(context.Background(), claim)
 	if err != nil || lease.Token != "generated" || repository.claim.Now != now {
 		t.Fatalf("lease=%+v record=%+v err=%v", lease, repository.claim, err)
@@ -132,7 +135,7 @@ func TestCoordinatorPropagatesIdentityGenerationFailuresAndBuiltinWiring(t *test
 		t.Fatal("builtin coordinator was not wired")
 	}
 	coordinator, _ := NewCoordinator(repository, failingIDs{}, clock.NewFake(time.Now()))
-	if _, err := coordinator.Claim(context.Background(), ClaimCommand{ProjectID: "p", RunID: "r", AttemptID: "a", AttemptSequence: 1, WorkerID: "w", ExecutorBuild: "b", LeaseDuration: time.Second}); err == nil {
+	if _, err := coordinator.Claim(context.Background(), validClaim()); err == nil {
 		t.Fatal("claim identity failure was hidden")
 	}
 	complete := CompleteCommand{
@@ -146,4 +149,10 @@ func TestCoordinatorPropagatesIdentityGenerationFailuresAndBuiltinWiring(t *test
 	if _, err := coordinator.MarkExpiredLost(context.Background(), MarkLostCommand{ProjectID: "p", RunID: "r", AttemptID: "a", AttemptSequence: 1, TraceID: "t"}); err == nil {
 		t.Fatal("lost identity failure was hidden")
 	}
+}
+
+func validClaim() ClaimCommand {
+	return ClaimCommand{ProjectID: "p", RunID: "r", AttemptID: "a", AttemptSequence: 1,
+		WorkerID: "w", ExecutorBuild: "b", ResourceClass: scheduling.ResourceSandbox,
+		Capabilities: []dsl.Coordinate{{Type: "task.python", Version: 1}}, LeaseDuration: time.Second}
 }

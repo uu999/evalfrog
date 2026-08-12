@@ -15,9 +15,12 @@ import (
 	"github.com/uu999/evalfrog/internal/adapters/kafka"
 	"github.com/uu999/evalfrog/internal/adapters/postgres"
 	"github.com/uu999/evalfrog/internal/adapters/schedulingredis"
+	"github.com/uu999/evalfrog/internal/adapters/workerapi"
 	"github.com/uu999/evalfrog/internal/definition"
+	"github.com/uu999/evalfrog/internal/eventing"
 	"github.com/uu999/evalfrog/internal/platform/bootstrap"
 	"github.com/uu999/evalfrog/internal/platform/clock"
+	"github.com/uu999/evalfrog/internal/platform/config"
 	"github.com/uu999/evalfrog/internal/platform/health"
 	"github.com/uu999/evalfrog/internal/platform/httpserver"
 	"github.com/uu999/evalfrog/internal/platform/identity"
@@ -25,7 +28,11 @@ import (
 	"github.com/uu999/evalfrog/internal/platform/logging"
 	"github.com/uu999/evalfrog/internal/platform/metrics"
 	"github.com/uu999/evalfrog/internal/platform/migrations"
+	"github.com/uu999/evalfrog/internal/recovery"
 	"github.com/uu999/evalfrog/internal/resources"
+	"github.com/uu999/evalfrog/internal/runtime/attempt"
+	runtimecontext "github.com/uu999/evalfrog/internal/runtime/context"
+	"github.com/uu999/evalfrog/internal/runtime/engine"
 	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
@@ -108,16 +115,21 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	resourceResolver := resources.NewResolver(store, accessService)
 	definitionService := definition.NewBuiltinService(store, accessService, resourceResolver)
 	server.Handle("/v1/", httpapi.New(accessService, definitionService))
+	attemptCoordinator := attempt.NewBuiltinCoordinator(store)
+	contextGateway, err := runtimecontext.NewGateway(store, cacheClient,
+		configuration.Cache.ExecutionSnapshotTTL.Duration(), configuration.Cache.ActiveRunContextTTL.Duration())
+	if err != nil {
+		logger.Error("execution context gateway construction failed", "error", err)
+		return 1
+	}
+	server.Handle("/internal/v1/", workerapi.NewHandler(attemptCoordinator, contextGateway, schedulingClient))
 	schedulerID, err := (identity.UUIDv7Generator{}).New()
 	if err != nil {
 		logger.Error("scheduler identity generation failed", "error", err)
 		return 1
 	}
 	projectScheduler, err := scheduling.New(store, schedulingClient,
-		scheduling.FixedCapacity{Pools: map[scheduling.ResourceClass]int{
-			scheduling.ResourceBuiltin: configuration.Worker.BuiltinSlots,
-			scheduling.ResourceSandbox: configuration.Worker.SandboxSlots,
-		}}, identity.UUIDv7Generator{}, clock.System{}, schedulerID, scheduling.Settings{
+		schedulingClient, identity.UUIDv7Generator{}, clock.System{}, schedulerID, scheduling.Settings{
 			LaneCount: configuration.Scheduler.LaneCount, CreditGrantBatch: configuration.Scheduler.CreditGrantBatch,
 			CandidateBatch: configuration.Scheduler.RedisCandidateBatch, AdmissionConcurrency: configuration.Scheduler.AdmissionConcurrency,
 			Epoch: configuration.Scheduler.Epoch.Duration(), ActiveProjectTTL: configuration.Scheduler.ActiveProjectTTL.Duration(),
@@ -133,7 +145,56 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 		logger.Error("scheduler service construction failed", "error", err)
 		return 1
 	}
-	if err := lifecycle.Run(ctx, configuration.Shutdown.Timeout.Duration(), logger, server, schedulerService); err != nil {
+	runtimeRelay, err := eventing.NewRelay(store, kafkaClient, "runtime-relay-"+schedulerID,
+		configuration.Outbox.Batch, configuration.Outbox.ClaimLease.Duration(), configuration.Outbox.ActivePoll.Duration())
+	if err != nil {
+		logger.Error("runtime relay construction failed", "error", err)
+		return 1
+	}
+	runtimeRelayService, err := eventing.NewRelayService("runtime-outbox-relay", runtimeRelay,
+		configuration.Outbox.ActivePoll.Duration(), configuration.Outbox.IdlePollMax.Duration(), logger)
+	if err != nil {
+		logger.Error("runtime relay service construction failed", "error", err)
+		return 1
+	}
+	taskRelay, err := eventing.NewTaskRelay(store, kafkaClient, "task-relay-"+schedulerID,
+		configuration.Outbox.Batch, configuration.Outbox.ClaimLease.Duration(), configuration.Outbox.ActivePoll.Duration())
+	if err != nil {
+		logger.Error("task relay construction failed", "error", err)
+		return 1
+	}
+	taskRelayService, err := eventing.NewRelayService("task-outbox-relay", taskRelay,
+		configuration.Outbox.ActivePoll.Duration(), configuration.Outbox.IdlePollMax.Duration(), logger)
+	if err != nil {
+		logger.Error("task relay service construction failed", "error", err)
+		return 1
+	}
+	runtimeKafka, err := kafka.OpenConsumer(configuration.Kafka, serviceName+"-engine", "runtime-engine-v1",
+		[]config.KafkaTopicConfig{configuration.Kafka.Topics.RuntimeEvent}, configuration.Kafka.RuntimeMaxPollRecords)
+	if err != nil {
+		logger.Error("runtime Kafka consumer creation failed", "error", err)
+		return 1
+	}
+	defer runtimeKafka.Close()
+	engineConsumer, err := engine.NewConsumer(store)
+	if err != nil {
+		logger.Error("engine consumer construction failed", "error", err)
+		return 1
+	}
+	runtimeConsumerService, err := eventing.NewRuntimeConsumerService(runtimeKafka, engineConsumer, logger)
+	if err != nil {
+		logger.Error("runtime consumer service construction failed", "error", err)
+		return 1
+	}
+	recoveryGrace := configuration.Worker.LostAfter.Duration() - configuration.Worker.LeaseDuration.Duration()
+	reaper, err := recovery.NewReaper(store, attemptCoordinator, recoveryGrace,
+		configuration.Worker.RecoveryScannerInterval.Duration(), configuration.Outbox.ScanBatch, "reaper-"+schedulerID, logger)
+	if err != nil {
+		logger.Error("attempt reaper construction failed", "error", err)
+		return 1
+	}
+	if err := lifecycle.Run(ctx, configuration.Shutdown.Timeout.Duration(), logger, server, schedulerService,
+		runtimeRelayService, taskRelayService, runtimeConsumerService, reaper); err != nil {
 		logger.Error("control plane stopped with error", "error", err)
 		return 1
 	}

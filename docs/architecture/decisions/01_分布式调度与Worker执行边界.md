@@ -184,7 +184,11 @@ HTTP/JSON 只是第一阶段 Transport Adapter。Worker Runtime 依赖 Transport
 
 第一阶段同一 Resource Class 的 Worker Pool 必须能力同构：每个副本都支持 Routing Policy 可能路由到该 Pool 的全部 Executor。Worker 在 Claim 前仍需上报并校验自身 Resource Class 与 Capability，防止错误部署导致不兼容 Task 进入 `running`。
 
+M7 实现将这条约束固化为三层防线：Worker Executor Catalog 启动时必须覆盖该 Resource Class 的完整 Routing Capability；Worker Heartbeat 注册必须携带同一完整集合；Scheduling Redis 只把能力指纹匹配当前 Routing Policy 且 TTL 未过期的 Slot 计入 Dispatch Window。Attempt Claim 仍逐任务复核 Operation/Resource Class/Capability，作为最终数据库防线。这样滚动发布期间的旧能力 Worker 不会继续扩大新版本调度容量。
+
 只有本地执行槽可用时 Worker 才领取并 Claim Task；本地等待队列必须有界，不能依靠无限预取制造隐藏积压。
+
+Kafka Consumer 在 `Poll → PostgreSQL Claim/Inbox → ACK` 的短临界区使用 Rebalance Gate，防止分区撤销后旧消费者提交 Offset；ACK、NACK 或进程关闭都会释放 Gate。Task ACK 后的 Executor 运行不阻塞 Kafka Rebalance，节点执行可靠性由 Attempt Lease/Reaper/Fencing 承担，而不是依赖消费者长期拥有分区。
 
 ## 6. Kafka Topic 与 Physical Partition
 
@@ -312,7 +316,7 @@ Topic 与 Broker 侧默认：Replication Factor `3`、Min ISR `2`、`cleanup.pol
 
 Producer 默认：`acks=all`、启用幂等生产、`max.in.flight.requests.per.connection=5`、`compression.type=zstd`、`linger.ms=5`、`batch.size=64 KiB`、Request Timeout `30s`、Delivery Timeout `120s`。
 
-Consumer 默认：关闭自动提交、初始 Offset 使用 `earliest`、Session Timeout `45s`、Heartbeat `3s`、Max Poll Interval `60s`、Cooperative Sticky 分配策略、`fetch.min.bytes=1`。Task Consumer 每次 Poll 的应用层领取上限为 `min(local_free_slots, 32)`；Runtime Event Consumer 的 `max.poll.records` 为 `100`。
+Consumer 默认：关闭自动提交、初始 Offset 使用 `earliest`、Session Timeout `45s`、Heartbeat `3s`、Max Poll Interval `60s`、Cooperative Sticky 分配策略、`fetch.min.bytes=1`。Task Consumer 每次 Poll 的应用层领取上限为 `min(local_free_slots, 32, floor(max_poll_interval / claim_timeout / 2))`，最后一项为 Rebalance Gate 保留 50% 安全余量；Runtime Event Consumer 的 `max.poll.records` 为 `100`。
 
 Partition 是消费并行度上限而不是 Worker 执行槽上限。第一阶段若每个 Worker 进程只有一个 Consumer，则两个 Task Pool 各最多有 `12` 个同组活跃 Consumer；单个 Consumer 可在本进程内向多个本地执行槽分发，但本地队列必须有界。预计活跃 Consumer 超过 Partition 数之前必须先扩 Partition 并验证 Key 分布。
 

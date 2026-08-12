@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/uu999/evalfrog/internal/definition"
+	"github.com/uu999/evalfrog/internal/dsl"
 	"github.com/uu999/evalfrog/internal/eventing"
 	runtimepkg "github.com/uu999/evalfrog/internal/runtime"
 	"github.com/uu999/evalfrog/internal/runtime/attempt"
 	enginepkg "github.com/uu999/evalfrog/internal/runtime/engine"
+	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
 type m5Harness struct {
@@ -238,7 +240,8 @@ func TestM5AttemptCompletionIsTwoAtomicTransactionsAndOnlyCurrentBecomesEffectiv
 	}
 	lease, err := harness.coordinator.Claim(harness.ctx, attempt.ClaimCommand{
 		ProjectID: harness.projectID, RunID: run.ID, AttemptID: queued.ID, AttemptSequence: queued.Sequence,
-		WorkerID: "worker-1", ExecutorBuild: "test-build", LeaseDuration: time.Minute,
+		WorkerID: "worker-1", ExecutorBuild: "test-build", ResourceClass: scheduling.ResourceSandbox,
+		Capabilities: []dsl.Coordinate{{Type: "task.python", Version: 1}}, LeaseDuration: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +302,8 @@ func TestM5DuplicateOutOfOrderAndLateEventsCannotReplaceCurrentAttempt(t *testin
 	var err error
 	lease, err := harness.coordinator.Claim(harness.ctx, attempt.ClaimCommand{
 		ProjectID: harness.projectID, RunID: run.ID, AttemptID: first.ID, AttemptSequence: first.Sequence,
-		WorkerID: "worker-lost", ExecutorBuild: "test-build", LeaseDuration: time.Minute,
+		WorkerID: "worker-lost", ExecutorBuild: "test-build", ResourceClass: scheduling.ResourceSandbox,
+		Capabilities: []dsl.Coordinate{{Type: "task.python", Version: 1}}, LeaseDuration: time.Minute,
 	})
 	if err != nil || lease.Token == "" {
 		t.Fatalf("claim=%+v err=%v", lease, err)
@@ -369,7 +373,8 @@ func TestM5ConcurrentWorkersClaimExactlyOneLeaseAndStaleFencingIsRejected(t *tes
 			lease, claimErr := harness.coordinator.Claim(harness.ctx, attempt.ClaimCommand{
 				ProjectID: harness.projectID, RunID: run.ID, AttemptID: queued.ID,
 				AttemptSequence: queued.Sequence, WorkerID: fmt.Sprintf("worker-%d", index),
-				ExecutorBuild: "test-build", LeaseDuration: time.Minute,
+				ExecutorBuild: "test-build", ResourceClass: scheduling.ResourceSandbox,
+				Capabilities: []dsl.Coordinate{{Type: "task.python", Version: 1}}, LeaseDuration: time.Minute,
 			})
 			results <- claimResult{lease: lease, err: claimErr}
 		}()

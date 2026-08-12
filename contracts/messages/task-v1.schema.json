@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evalfrog.dev/contracts/messages/task-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_version", "task_id", "project_id", "run_id", "node_run_id", "execution_node_id", "attempt_id", "attempt_sequence", "resource_class", "occurred_at", "trace_id"],
+  "properties": {
+    "message_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "node_run_id": {"type": "string", "minLength": 1},
+    "execution_node_id": {"type": "string", "minLength": 1},
+    "attempt_id": {"type": "string", "minLength": 1},
+    "attempt_sequence": {"type": "integer", "minimum": 1},
+    "resource_class": {"enum": ["builtin", "sandbox"]},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "trace_id": {"type": "string", "minLength": 1}
+  }
+}
