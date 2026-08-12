@@ -227,6 +227,23 @@ func (service Service) CompileDraftTestSnapshot(ctx context.Context, projectID, 
 	return stored, nil, nil
 }
 
+// ResolveDraftTestSnapshot returns the immutable Snapshot that was compiled
+// from a specific immutable Draft Revision. It never recompiles or follows the
+// mutable draft pointer, so TestDraft Run creation can be retried safely.
+func (service Service) ResolveDraftTestSnapshot(ctx context.Context, projectID, principalID, workflowID string, revisionNumber int64) (ExecutionSnapshot, error) {
+	if err := service.access.Require(ctx, projectID, principalID, access.PermissionWorkflowTest); err != nil {
+		return ExecutionSnapshot{}, mapAccessError(err)
+	}
+	if projectID == "" || workflowID == "" || revisionNumber < 1 {
+		return ExecutionSnapshot{}, invalidArgument("project_id, workflow_id and positive revision are required")
+	}
+	snapshot, err := service.repository.ResolveDraftTestSnapshot(ctx, projectID, workflowID, revisionNumber)
+	if err != nil {
+		return ExecutionSnapshot{}, repositoryError("resolve draft test snapshot", err)
+	}
+	return snapshot, nil
+}
+
 type PublishCommand struct {
 	ProjectID        string
 	PrincipalID      string
