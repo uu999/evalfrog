@@ -17,13 +17,16 @@ import (
 	"github.com/uu999/evalfrog/internal/adapters/schedulingredis"
 	"github.com/uu999/evalfrog/internal/definition"
 	"github.com/uu999/evalfrog/internal/platform/bootstrap"
+	"github.com/uu999/evalfrog/internal/platform/clock"
 	"github.com/uu999/evalfrog/internal/platform/health"
 	"github.com/uu999/evalfrog/internal/platform/httpserver"
+	"github.com/uu999/evalfrog/internal/platform/identity"
 	"github.com/uu999/evalfrog/internal/platform/lifecycle"
 	"github.com/uu999/evalfrog/internal/platform/logging"
 	"github.com/uu999/evalfrog/internal/platform/metrics"
 	"github.com/uu999/evalfrog/internal/platform/migrations"
 	"github.com/uu999/evalfrog/internal/resources"
+	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
 const serviceName = "evalfrog-control-plane"
@@ -105,7 +108,32 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	resourceResolver := resources.NewResolver(store, accessService)
 	definitionService := definition.NewBuiltinService(store, accessService, resourceResolver)
 	server.Handle("/v1/", httpapi.New(accessService, definitionService))
-	if err := lifecycle.Run(ctx, configuration.Shutdown.Timeout.Duration(), logger, server); err != nil {
+	schedulerID, err := (identity.UUIDv7Generator{}).New()
+	if err != nil {
+		logger.Error("scheduler identity generation failed", "error", err)
+		return 1
+	}
+	projectScheduler, err := scheduling.New(store, schedulingClient,
+		scheduling.FixedCapacity{Pools: map[scheduling.ResourceClass]int{
+			scheduling.ResourceBuiltin: configuration.Worker.BuiltinSlots,
+			scheduling.ResourceSandbox: configuration.Worker.SandboxSlots,
+		}}, identity.UUIDv7Generator{}, clock.System{}, schedulerID, scheduling.Settings{
+			LaneCount: configuration.Scheduler.LaneCount, CreditGrantBatch: configuration.Scheduler.CreditGrantBatch,
+			CandidateBatch: configuration.Scheduler.RedisCandidateBatch, AdmissionConcurrency: configuration.Scheduler.AdmissionConcurrency,
+			Epoch: configuration.Scheduler.Epoch.Duration(), ActiveProjectTTL: configuration.Scheduler.ActiveProjectTTL.Duration(),
+			BalancerLease: configuration.Scheduler.ActiveProjectTTL.Duration(), ReservationTTL: configuration.Scheduler.InflightReservationTTL.Duration(),
+			DispatchBufferFactor: configuration.Scheduler.DispatchBufferFactor, CapacityChangeLimit: configuration.Scheduler.EpochCapacityChangeLimit,
+		})
+	if err != nil {
+		logger.Error("scheduler construction failed", "error", err)
+		return 1
+	}
+	schedulerService, err := scheduling.NewService(projectScheduler, "scheduler-"+schedulerID, logger)
+	if err != nil {
+		logger.Error("scheduler service construction failed", "error", err)
+		return 1
+	}
+	if err := lifecycle.Run(ctx, configuration.Shutdown.Timeout.Duration(), logger, server, schedulerService); err != nil {
 		logger.Error("control plane stopped with error", "error", err)
 		return 1
 	}

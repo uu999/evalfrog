@@ -63,6 +63,11 @@ func Validate(graph Graph) []Violation {
 			if strings.HasPrefix(fromRelative, "internal/scheduling") && strings.HasPrefix(toRelative, "internal/runtime/engine") {
 				violations = append(violations, Violation{from, imported, "scheduler must not interpret engine control semantics"})
 			}
+			if strings.HasPrefix(fromRelative, "internal/scheduling") && hasAnyPrefix(toRelative, []string{
+				"github.com/redis/go-redis", "github.com/jackc/pgx", "github.com/twmb/franz-go",
+			}) {
+				violations = append(violations, Violation{from, imported, "scheduler domain must depend on authority and coordination ports, not infrastructure clients"})
+			}
 		}
 	}
 	sort.Slice(violations, func(left, right int) bool { return violations[left].Error() < violations[right].Error() })

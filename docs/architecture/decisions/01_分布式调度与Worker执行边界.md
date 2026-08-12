@@ -330,7 +330,7 @@ Partition 是消费并行度上限而不是 Worker 执行槽上限。第一阶�
 | Ready Reconcile Interval | 30000 ms |
 | Global Dispatch Window | `ceil(total_healthy_worker_slots × 1.2)` |
 | Pool Feasibility Window | `ceil(pool_healthy_worker_slots × 1.2)` |
-| 每 Epoch 容量变化上限 | 10% |
+| 每 Epoch 容量上调上限 | 10%；容量下调立即生效，避免向失去健康槽位的 Pool 继续派发 |
 | 基础设施错误 Backoff | 50 ms 指数退避，最大 2s，20% Jitter |
 | Idle Poll | 100 ms，最大退避至 1s |
 
