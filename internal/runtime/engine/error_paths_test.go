@@ -13,6 +13,12 @@ import (
 func TestEngineCommandGuardsAndReadQueries(t *testing.T) {
 	harness := newTestHarness(t, linearDocument(1))
 	ready := harness.ReadyIDs()[0]
+	if applied, err := harness.Engine.RequestCancel(time.Time{}, "invalid"); err == nil || applied {
+		t.Fatalf("zero-time cancel applied=%v err=%v", applied, err)
+	}
+	if err := harness.Engine.CancelAttempt("missing", harness.Now()); err == nil {
+		t.Fatal("missing attempt cancellation accepted")
+	}
 	if state, exists := harness.Engine.EdgeState(eid(1)); !exists || state != EdgeActive {
 		t.Fatalf("entry edge state=%s exists=%v", state, exists)
 	}

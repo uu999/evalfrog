@@ -94,6 +94,14 @@ func TestRetryLateAndDuplicateResultsConverge(t *testing.T) {
 	if node.NextRetryAt() != harness.Now().Add(10*time.Millisecond) {
 		t.Fatalf("next retry at=%s", node.NextRetryAt())
 	}
+	version := node.StateVersion()
+	if err := harness.Engine.HandleAttemptCompleted(first[0], harness.Now()); err != nil {
+		t.Fatalf("duplicate retry-wait completion: %v", err)
+	}
+	node, _ = harness.Engine.Node(nodeID)
+	if node.StateVersion() != version || node.State() != runtime.NodeRetryWait {
+		t.Fatalf("duplicate completion changed retry-wait node")
+	}
 	if err := harness.Engine.RetryDue(nodeID, harness.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +126,7 @@ func TestRetryLateAndDuplicateResultsConverge(t *testing.T) {
 		t.Fatal(err)
 	}
 	node, _ = harness.Engine.Node(nodeID)
-	version := node.StateVersion()
+	version = node.StateVersion()
 	if err := harness.Succeed(second[0], result); err != nil {
 		t.Fatalf("duplicate completion: %v", err)
 	}
