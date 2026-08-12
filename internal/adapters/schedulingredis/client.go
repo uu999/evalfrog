@@ -36,6 +36,66 @@ func (client *Client) Check(ctx context.Context) error {
 
 func (client *Client) Close() error { return client.client.Close() }
 
+var registerWorkerScript = redis.NewScript(`
+local now = redis.call('TIME')
+local expires = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000) + tonumber(ARGV[3])
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[4])
+redis.call('ZADD', KEYS[3], expires, ARGV[1])
+redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]) * 2)
+redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[3]) * 2)
+redis.call('PEXPIRE', KEYS[3], tonumber(ARGV[3]) * 2)
+return expires
+`)
+
+func (client *Client) RegisterWorker(ctx context.Context, registration scheduling.WorkerRegistration) error {
+	if err := registration.Validate(); err != nil {
+		return err
+	}
+	tag := "{workers:" + string(registration.ResourceClass) + "}"
+	_, err := registerWorkerScript.Run(ctx, client.client,
+		[]string{client.prefix + tag + ":slots", client.prefix + tag + ":capabilities", client.prefix + tag + ":expiry"},
+		registration.WorkerID, registration.Slots, registration.TTL.Milliseconds(),
+		scheduling.CapabilityFingerprint(registration.ResourceClass)).Result()
+	return err
+}
+
+var capacityScript = redis.NewScript(`
+local now = redis.call('TIME')
+local millis = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', millis)
+if #expired > 0 then
+  redis.call('ZREM', KEYS[3], unpack(expired))
+  redis.call('HDEL', KEYS[1], unpack(expired))
+  redis.call('HDEL', KEYS[2], unpack(expired))
+end
+local active = redis.call('ZRANGEBYSCORE', KEYS[3], '(' .. millis, '+inf')
+local total = 0
+for _, worker in ipairs(active) do
+  if redis.call('HGET', KEYS[2], worker) == ARGV[1] then
+    total = total + tonumber(redis.call('HGET', KEYS[1], worker) or '0')
+  end
+end
+return total
+`)
+
+func (client *Client) HealthyCapacity(ctx context.Context) (scheduling.Capacity, error) {
+	result := scheduling.Capacity{Pools: make(map[scheduling.ResourceClass]int, 2)}
+	for _, class := range []scheduling.ResourceClass{scheduling.ResourceBuiltin, scheduling.ResourceSandbox} {
+		tag := "{workers:" + string(class) + "}"
+		value, err := capacityScript.Run(ctx, client.client,
+			[]string{client.prefix + tag + ":slots", client.prefix + tag + ":capabilities", client.prefix + tag + ":expiry"},
+			scheduling.CapabilityFingerprint(class)).Int()
+		if err != nil {
+			return scheduling.Capacity{}, err
+		}
+		result.Pools[class] = value
+	}
+	return result, nil
+}
+
+var _ scheduling.CapacityRegistry = (*Client)(nil)
+
 // ClearDerivedState deletes only keys under this profile-specific Scheduling
 // prefix. Admission then remains fail-closed until a full PostgreSQL rebuild.
 func (client *Client) ClearDerivedState(ctx context.Context) error {

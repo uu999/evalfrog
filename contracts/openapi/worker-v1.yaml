@@ -1,0 +1,54 @@
+openapi: 3.1.0
+info:
+  title: EvalFrog Worker API
+  version: 1.0.0-m7
+  description: Internal HTTP/JSON control protocol. Workers never receive database credentials.
+paths:
+  /internal/v1/attempts/{attempt_id}/claim:
+    post:
+      operationId: claimAttempt
+      parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ClaimRequest'}}}}
+      responses: {'200': {description: Claimed}}
+  /internal/v1/attempts/{attempt_id}/heartbeat:
+    post:
+      operationId: heartbeatAttempt
+      parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: Lease extended}}
+  /internal/v1/attempts/{attempt_id}/complete:
+    post:
+      operationId: completeAttempt
+      parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: Completion accepted or already recorded}}
+  /internal/v1/attempts/{attempt_id}/context:
+    post:
+      operationId: loadExecutionContext
+      parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: Lease-scoped execution context}}
+  /internal/v1/workers/{worker_id}/heartbeat:
+    post:
+      operationId: registerWorkerCapacity
+      parameters: [{name: worker_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: Capacity lease refreshed}}
+components:
+  schemas:
+    Capability:
+      type: object
+      additionalProperties: false
+      required: [type, version]
+      properties:
+        type: {type: string, minLength: 1}
+        version: {type: integer, minimum: 1}
+    ClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, run_id, attempt_sequence, worker_id, executor_build, resource_class, capabilities, lease_duration_ms]
+      properties:
+        project_id: {type: string, minLength: 1}
+        run_id: {type: string, minLength: 1}
+        attempt_sequence: {type: integer, minimum: 1}
+        worker_id: {type: string, minLength: 1}
+        executor_build: {type: string, minLength: 1}
+        resource_class: {enum: [builtin, sandbox]}
+        capabilities: {type: array, minItems: 1, items: {$ref: '#/components/schemas/Capability'}}
+        lease_duration_ms: {type: integer, minimum: 1}

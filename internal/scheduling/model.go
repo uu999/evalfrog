@@ -2,6 +2,8 @@ package scheduling
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -46,6 +48,36 @@ func BuiltinV1Router() StaticRouter {
 		{Type: "task.http", Version: 1}:   ResourceBuiltin,
 		{Type: "task.rpc", Version: 1}:    ResourceBuiltin,
 	}
+}
+
+// RequiredCapabilities returns the complete executor set for a first-phase
+// resource class. Pool members are deliberately homogeneous: Kafka may assign
+// any partition in a class topic to any member of its consumer group.
+func RequiredCapabilities(class ResourceClass) []dsl.Coordinate {
+	result := make([]dsl.Coordinate, 0, 2)
+	for coordinate, routedClass := range BuiltinV1Router() {
+		if routedClass == class {
+			result = append(result, coordinate)
+		}
+	}
+	sort.Slice(result, func(left, right int) bool {
+		if result[left].Type != result[right].Type {
+			return result[left].Type < result[right].Type
+		}
+		return result[left].Version < result[right].Version
+	})
+	return result
+}
+
+// CapabilityFingerprint lets a scheduler ignore stale workers from an older
+// routing-policy rollout. Validation prevents partial pools within one binary;
+// the fingerprint also keeps mixed-version rolling deployments fail-closed.
+func CapabilityFingerprint(class ResourceClass) string {
+	digest := sha256.New()
+	for _, coordinate := range RequiredCapabilities(class) {
+		_, _ = fmt.Fprintf(digest, "%s@%d\n", coordinate.Type, coordinate.Version)
+	}
+	return hex.EncodeToString(digest.Sum(nil))
 }
 
 type Candidate struct {
@@ -176,6 +208,50 @@ type Capacity struct {
 
 type CapacityProvider interface {
 	HealthyCapacity(context.Context) (Capacity, error)
+}
+
+type WorkerRegistration struct {
+	WorkerID      string
+	ExecutorBuild string
+	ResourceClass ResourceClass
+	Slots         int
+	Capabilities  []dsl.Coordinate
+	TTL           time.Duration
+}
+
+func (registration WorkerRegistration) Validate() error {
+	if registration.WorkerID == "" || registration.ExecutorBuild == "" || !registration.ResourceClass.Valid() || registration.Slots < 1 || registration.TTL <= 0 || len(registration.Capabilities) == 0 {
+		return fmt.Errorf("worker registration identity, capabilities, slots and TTL are required")
+	}
+	actual := make(map[dsl.Coordinate]struct{}, len(registration.Capabilities))
+	for _, coordinate := range registration.Capabilities {
+		if coordinate.Type == "" || coordinate.Version == 0 {
+			return fmt.Errorf("worker registration capability is invalid")
+		}
+		class, routable := BuiltinV1Router().Resolve(coordinate)
+		if !routable || class != registration.ResourceClass {
+			return fmt.Errorf("worker capability %s@%d does not belong to %s", coordinate.Type, coordinate.Version, registration.ResourceClass)
+		}
+		actual[coordinate] = struct{}{}
+	}
+	if len(actual) != len(registration.Capabilities) {
+		return fmt.Errorf("worker capabilities contain duplicates")
+	}
+	required := RequiredCapabilities(registration.ResourceClass)
+	if len(actual) != len(required) {
+		return fmt.Errorf("worker must provide the complete %s capability set", registration.ResourceClass)
+	}
+	for _, coordinate := range required {
+		if _, exists := actual[coordinate]; !exists {
+			return fmt.Errorf("worker is missing required capability %s@%d", coordinate.Type, coordinate.Version)
+		}
+	}
+	return nil
+}
+
+type CapacityRegistry interface {
+	CapacityProvider
+	RegisterWorker(context.Context, WorkerRegistration) error
 }
 
 type FixedCapacity Capacity

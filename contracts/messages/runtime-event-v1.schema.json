@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evalfrog.dev/contracts/messages/runtime-event-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_version", "event_id", "project_id", "run_id", "aggregate_type", "aggregate_id", "event_type", "occurred_at", "trace_id"],
+  "properties": {
+    "message_version": {"const": 1},
+    "event_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "aggregate_type": {"enum": ["workflow_run", "node_attempt"]},
+    "aggregate_id": {"type": "string", "minLength": 1},
+    "event_type": {"enum": ["run.created", "run.cancel_requested", "attempt.completed", "attempt.lost", "retry.due", "run.deadline_reached"]},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "trace_id": {"type": "string", "minLength": 1}
+  }
+}

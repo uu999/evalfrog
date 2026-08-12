@@ -3,6 +3,9 @@ package eventing
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,6 +54,140 @@ func TestRuntimeEventContractIsStrictVersionedAndLightweight(t *testing.T) {
 	if _, err := invalid.MarshalJSONMessage(); err == nil {
 		t.Fatal("invalid event marshaled")
 	}
+}
+
+func TestRuntimeConsumerAcksSuccessDeadLettersPoisonAndNacksRetryableFailure(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	valid, _ := testEvent().MarshalJSONMessage()
+	consumer := &sequenceConsumer{deliveries: []*testDelivery{{payload: valid}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	handler := &testRuntimeHandler{after: cancel}
+	service, err := NewRuntimeConsumerService(consumer, handler, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Name() != "runtime-event-consumer" {
+		t.Fatal("consumer service name missing")
+	}
+	_ = service.Run(ctx)
+	if consumer.deliveries[0].acked.Load() != 1 || handler.calls.Load() != 1 {
+		t.Fatal("successful event was not handled and acked")
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	consumer = &sequenceConsumer{deliveries: []*testDelivery{{payload: []byte(`{"bad":true}`)}}}
+	consumer.after = cancel
+	service, _ = NewRuntimeConsumerService(consumer, &testRuntimeHandler{}, logger)
+	_ = service.Run(ctx)
+	if consumer.deliveries[0].dead.Load() != 1 {
+		t.Fatal("poison event was not dead-lettered")
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	consumer = &sequenceConsumer{deliveries: []*testDelivery{{payload: valid}}}
+	handler = &testRuntimeHandler{err: errors.New("postgres down"), after: cancel}
+	service, _ = NewRuntimeConsumerService(consumer, handler, logger)
+	_ = service.Run(ctx)
+	if consumer.deliveries[0].nacked.Load() != 1 || consumer.deliveries[0].acked.Load() != 0 {
+		t.Fatal("retryable failure was not nacked")
+	}
+	_ = service.Shutdown(context.Background())
+	if _, err = NewRuntimeConsumerService(nil, handler, logger); err == nil {
+		t.Fatal("invalid consumer service accepted")
+	}
+	consumer = &sequenceConsumer{deliveries: []*testDelivery{{payload: valid, ackErr: errors.New("commit failed")}}}
+	service, _ = NewRuntimeConsumerService(consumer, &testRuntimeHandler{}, logger)
+	if err = service.Run(context.Background()); err == nil {
+		t.Fatal("ack failure hidden")
+	}
+	consumer = &sequenceConsumer{deliveries: []*testDelivery{{payload: []byte(`{`), deadErr: errors.New("dlq failed")}}}
+	service, _ = NewRuntimeConsumerService(consumer, &testRuntimeHandler{}, logger)
+	if err = service.Run(context.Background()); err == nil {
+		t.Fatal("DLQ failure hidden")
+	}
+}
+
+func TestRelayServiceBackoffAndShutdown(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	relay := &testBatchRelay{after: cancel}
+	service, err := NewRelayService("relay", relay, time.Millisecond, 2*time.Millisecond, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = service.Run(ctx)
+	if relay.calls.Load() == 0 || service.Name() != "relay" {
+		t.Fatal("relay did not run")
+	}
+	_ = service.Shutdown(context.Background())
+	if _, err = NewRelayService("", relay, 0, 0, logger); err == nil {
+		t.Fatal("invalid relay service accepted")
+	}
+}
+
+type testDelivery struct {
+	payload             []byte
+	acked, nacked, dead atomic.Int32
+	ackErr, deadErr     error
+}
+
+func (value *testDelivery) Topic() string             { return "topic" }
+func (value *testDelivery) Key() string               { return "key" }
+func (value *testDelivery) Payload() []byte           { return value.payload }
+func (value *testDelivery) Ack(context.Context) error { value.acked.Add(1); return value.ackErr }
+func (value *testDelivery) Nack()                     { value.nacked.Add(1) }
+func (value *testDelivery) DeadLetter(context.Context, string) error {
+	value.dead.Add(1)
+	return value.deadErr
+}
+
+type sequenceConsumer struct {
+	deliveries []*testDelivery
+	index      int
+	after      context.CancelFunc
+}
+
+func (value *sequenceConsumer) Receive(ctx context.Context) (Delivery, error) {
+	if value.index >= len(value.deliveries) {
+		if value.after != nil {
+			value.after()
+			value.after = nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	delivery := value.deliveries[value.index]
+	value.index++
+	return delivery, nil
+}
+
+type testRuntimeHandler struct {
+	calls atomic.Int32
+	err   error
+	after context.CancelFunc
+}
+
+func (value *testRuntimeHandler) Consume(context.Context, RuntimeEvent) error {
+	value.calls.Add(1)
+	if value.after != nil {
+		value.after()
+		value.after = nil
+	}
+	return value.err
+}
+
+type testBatchRelay struct {
+	calls atomic.Int32
+	after context.CancelFunc
+}
+
+func (value *testBatchRelay) RelayOnce(context.Context) (int, error) {
+	value.calls.Add(1)
+	if value.after != nil {
+		value.after()
+		value.after = nil
+	}
+	return 0, nil
 }
 
 func TestRelayIsAtLeastOnceAndReleasesPublishFailure(t *testing.T) {

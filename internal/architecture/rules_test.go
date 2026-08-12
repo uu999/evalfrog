@@ -36,6 +36,8 @@ func TestRulesRejectForbiddenImports(t *testing.T) {
 	}{
 		{"domain adapter", "internal/definition", "internal/adapters/postgres", "domain modules"},
 		{"worker database", "internal/worker/runtime", "internal/adapters/postgres", "workers must not"},
+		{"worker pgx", "internal/worker/runtime", "github.com/jackc/pgx/v5", "must not carry"},
+		{"worker redis", "internal/worker/runtime", "github.com/redis/go-redis/v9", "must not carry"},
 		{"HTTP API database", "internal/adapters/httpapi", "internal/adapters/postgres", "application ports"},
 		{"runtime authoring", "internal/runtime/engine", "internal/ir", "authoring models"},
 		{"runtime root authoring", "internal/runtime", "internal/definition", "authoring models"},

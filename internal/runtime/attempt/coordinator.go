@@ -8,16 +8,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/uu999/evalfrog/internal/dsl"
 	"github.com/uu999/evalfrog/internal/platform/clock"
 	"github.com/uu999/evalfrog/internal/platform/identity"
 	"github.com/uu999/evalfrog/internal/runtime"
+	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
 var (
-	ErrNotFound      = errors.New("attempt not found")
-	ErrNotCurrent    = errors.New("attempt is not current")
-	ErrLeaseMismatch = errors.New("attempt lease or fencing token does not match")
-	ErrStateConflict = errors.New("attempt state conflict")
+	ErrNotFound           = errors.New("attempt not found")
+	ErrNotCurrent         = errors.New("attempt is not current")
+	ErrLeaseMismatch      = errors.New("attempt lease or fencing token does not match")
+	ErrStateConflict      = errors.New("attempt state conflict")
+	ErrCapabilityMismatch = errors.New("worker capability does not match attempt")
 )
 
 type Lease struct {
@@ -31,6 +34,8 @@ type ClaimCommand struct {
 	ProjectID, RunID, AttemptID string
 	AttemptSequence             uint32
 	WorkerID, ExecutorBuild     string
+	ResourceClass               scheduling.ResourceClass
+	Capabilities                []dsl.Coordinate
 	LeaseDuration               time.Duration
 }
 
@@ -118,8 +123,13 @@ func NewBuiltinCoordinator(repository Repository) Coordinator {
 }
 
 func (coordinator Coordinator) Claim(ctx context.Context, command ClaimCommand) (Lease, error) {
-	if command.ProjectID == "" || command.RunID == "" || command.AttemptID == "" || command.AttemptSequence == 0 || command.WorkerID == "" || command.ExecutorBuild == "" || command.LeaseDuration <= 0 {
+	if command.ProjectID == "" || command.RunID == "" || command.AttemptID == "" || command.AttemptSequence == 0 || command.WorkerID == "" || command.ExecutorBuild == "" || !command.ResourceClass.Valid() || len(command.Capabilities) == 0 || command.LeaseDuration <= 0 {
 		return Lease{}, fmt.Errorf("claim identity, worker, build and positive lease are required")
+	}
+	for _, capability := range command.Capabilities {
+		if capability.Type == "" || capability.Version == 0 {
+			return Lease{}, fmt.Errorf("claim capability coordinate is invalid")
+		}
 	}
 	token, err := coordinator.ids.New()
 	if err != nil {

@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/uu999/evalfrog/internal/dsl"
 	"github.com/uu999/evalfrog/internal/eventing"
 	"github.com/uu999/evalfrog/internal/runtime"
 	"github.com/uu999/evalfrog/internal/runtime/attempt"
+	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
 func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (attempt.Lease, error) {
@@ -31,6 +33,8 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 	var existingFencing uint64
 	var existingExpiry *time.Time
 	var existingLeaseValid bool
+	var operation dsl.Coordinate
+	var resourceClass scheduling.ResourceClass
 	err = tx.QueryRow(ctx, `
 		SELECT node_run_id::text FROM node_attempts
 		WHERE project_id=$1 AND run_id=$2 AND attempt_id=$3`,
@@ -43,10 +47,10 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 	}
 	// Keep the same Node -> Attempt row-lock order used by Engine state restore.
 	err = tx.QueryRow(ctx, `
-		SELECT state, current_attempt_id::text FROM node_runs
+		SELECT state, current_attempt_id::text, operation_type, operation_version, resource_class FROM node_runs
 		WHERE project_id=$1 AND run_id=$2 AND node_run_id=$3
 		FOR UPDATE`, record.ProjectID, record.RunID, nodeRunID).
-		Scan(&nodeState, &currentAttemptID)
+		Scan(&nodeState, &currentAttemptID, &operation.Type, &operation.Version, &resourceClass)
 	if err != nil {
 		return attempt.Lease{}, err
 	}
@@ -64,6 +68,9 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 	}
 	if sequence != record.AttemptSequence || currentAttemptID == nil || *currentAttemptID != record.AttemptID {
 		return attempt.Lease{}, attempt.ErrNotCurrent
+	}
+	if resourceClass != record.ResourceClass || !containsCapability(record.Capabilities, operation) {
+		return attempt.Lease{}, attempt.ErrCapabilityMismatch
 	}
 	if state == runtime.AttemptRunning {
 		if existingOwner != nil && *existingOwner == record.WorkerID && existingToken != nil && existingExpiry != nil && existingLeaseValid {
@@ -110,6 +117,15 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 		return attempt.Lease{}, err
 	}
 	return attempt.Lease{Token: record.LeaseToken, Owner: record.WorkerID, FencingToken: fencing, ExpiresAt: expiresAt}, nil
+}
+
+func containsCapability(capabilities []dsl.Coordinate, required dsl.Coordinate) bool {
+	for _, capability := range capabilities {
+		if capability == required {
+			return true
+		}
+	}
+	return false
 }
 
 func (store *Store) Heartbeat(ctx context.Context, record attempt.HeartbeatRecord) (attempt.Lease, error) {

@@ -303,6 +303,21 @@ func TestSchedulerValidatesPublicContractsAndRoutingPolicy(t *testing.T) {
 	if _, _, err := DispatchWindows(Capacity{}, 0.5); err == nil {
 		t.Fatal("invalid buffer factor accepted")
 	}
+	builtin := RequiredCapabilities(ResourceBuiltin)
+	if len(builtin) != 2 || builtin[0].Type != "task.http" || builtin[1].Type != "task.rpc" {
+		t.Fatalf("builtin capabilities=%v", builtin)
+	}
+	if CapabilityFingerprint(ResourceBuiltin) == "" || CapabilityFingerprint(ResourceBuiltin) == CapabilityFingerprint(ResourceSandbox) {
+		t.Fatal("resource-class capability fingerprints are not stable and distinct")
+	}
+	registration := WorkerRegistration{WorkerID: "worker", ExecutorBuild: "build", ResourceClass: ResourceBuiltin, Slots: 2, Capabilities: builtin, TTL: time.Minute}
+	if err := registration.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	registration.Capabilities = builtin[:1]
+	if err := registration.Validate(); err == nil {
+		t.Fatal("partial resource-class capability set accepted")
+	}
 	if _, err := CreditBatches(nil, 0); err == nil {
 		t.Fatal("invalid credit batch accepted")
 	}
