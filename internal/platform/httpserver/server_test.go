@@ -16,6 +16,9 @@ func TestServerStartsAndShutsDown(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := New("test", "127.0.0.1:0", time.Second, time.Second, logger, health.New(time.Second), metrics.New("test"))
+	server.Handle("/v1/", http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
 	runDone := make(chan error, 1)
 	go func() { runDone <- server.Run(context.Background()) }()
 	select {
@@ -30,6 +33,14 @@ func TestServerStartsAndShutsDown(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", response.StatusCode)
+	}
+	apiResponse, err := http.Get("http://" + server.Address() + "/v1/probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiResponse.Body.Close()
+	if apiResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("API status=%d", apiResponse.StatusCode)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

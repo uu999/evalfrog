@@ -26,6 +26,7 @@ type Server struct {
 	readiness *health.Registry
 	metrics   *metrics.Registry
 	http      *http.Server
+	mux       *http.ServeMux
 	ready     chan struct{}
 	mu        sync.RWMutex
 	bound     string
@@ -36,7 +37,7 @@ func New(service, address string, readHeaderTimeout, idleTimeout time.Duration, 
 		service: service, address: address, logger: logger, readiness: readiness, metrics: metricRegistry, ready: make(chan struct{}),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", server.info)
+	mux.HandleFunc("GET /{$}", server.info)
 	mux.HandleFunc("GET /health/live", server.live)
 	mux.HandleFunc("GET /health/ready", server.readyHandler)
 	mux.Handle("GET /metrics", metricRegistry.Handler())
@@ -44,7 +45,15 @@ func New(service, address string, readHeaderTimeout, idleTimeout time.Duration, 
 	server.http = &http.Server{
 		Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: idleTimeout,
 	}
+	server.mux = mux
 	return server
+}
+
+// Handle mounts an application adapter before the server starts. Platform
+// health and metrics remain owned by this package; domain APIs own their own
+// versioned paths below the mounted prefix.
+func (server *Server) Handle(pattern string, handler http.Handler) {
+	server.mux.Handle(pattern, handler)
 }
 
 func (server *Server) Name() string { return "http-server" }

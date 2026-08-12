@@ -9,10 +9,13 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/uu999/evalfrog/internal/access"
 	"github.com/uu999/evalfrog/internal/adapters/cacheredis"
+	"github.com/uu999/evalfrog/internal/adapters/httpapi"
 	"github.com/uu999/evalfrog/internal/adapters/kafka"
 	"github.com/uu999/evalfrog/internal/adapters/postgres"
 	"github.com/uu999/evalfrog/internal/adapters/schedulingredis"
+	"github.com/uu999/evalfrog/internal/definition"
 	"github.com/uu999/evalfrog/internal/platform/bootstrap"
 	"github.com/uu999/evalfrog/internal/platform/health"
 	"github.com/uu999/evalfrog/internal/platform/httpserver"
@@ -20,6 +23,7 @@ import (
 	"github.com/uu999/evalfrog/internal/platform/logging"
 	"github.com/uu999/evalfrog/internal/platform/metrics"
 	"github.com/uu999/evalfrog/internal/platform/migrations"
+	"github.com/uu999/evalfrog/internal/resources"
 )
 
 const serviceName = "evalfrog-control-plane"
@@ -96,6 +100,11 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 		configuration.HTTP.ReadHeaderTimeout.Duration(), configuration.HTTP.IdleTimeout.Duration(),
 		logger, readiness, metrics.New(serviceName),
 	)
+	store := postgres.NewStore(postgresClient.Pool())
+	accessService := access.NewService(store)
+	resourceResolver := resources.NewResolver(store, accessService)
+	definitionService := definition.NewBuiltinService(store, accessService, resourceResolver)
+	server.Handle("/v1/", httpapi.New(accessService, definitionService))
 	if err := lifecycle.Run(ctx, configuration.Shutdown.Timeout.Duration(), logger, server); err != nil {
 		logger.Error("control plane stopped with error", "error", err)
 		return 1

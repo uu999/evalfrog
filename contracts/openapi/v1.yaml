@@ -1,0 +1,323 @@
+openapi: 3.1.0
+info:
+  title: EvalFrog External API
+  version: 1.0.0-m3
+  description: Human Web and Agent CLI share this Definition lifecycle API.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+paths:
+  /v1/projects/{project_id}/workflows:
+    post:
+      operationId: createWorkflow
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkflowRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/WorkflowCreated' }
+        default: { $ref: '#/components/responses/Error' }
+  '/v1/projects/{project_id}/workflows:copy':
+    post:
+      operationId: copyPublishedVersion
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CopyWorkflowRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/WorkflowCreated' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}:
+    get:
+      operationId: getWorkflow
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+      responses:
+        '200':
+          description: Project-scoped Workflow metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workflow' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}/draft:
+    get:
+      operationId: getDraft
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+      responses:
+        '200':
+          description: Current Draft pointer and immutable revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Draft' }
+        default: { $ref: '#/components/responses/Error' }
+    put:
+      operationId: saveDraft
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaveDraftRequest' }
+      responses:
+        '201':
+          description: Newly created immutable Draft Revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DraftRevision' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}/draft/validate:
+    post:
+      operationId: validateDraft
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RevisionRequest' }
+      responses:
+        '200':
+          description: Stable ordered diagnostics; valid can be false.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid, diagnostics]
+                additionalProperties: false
+                properties:
+                  valid: { type: boolean }
+                  diagnostics: { type: array, items: { type: object } }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}/draft/test-snapshots:
+    post:
+      operationId: compileDraftTestSnapshot
+      description: Compiles and persists an immutable Snapshot; it does not create a Run in M3.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RevisionRequest' }
+      responses:
+        '201':
+          description: Immutable execution content compiled by the server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutionSnapshot' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}/publish:
+    post:
+      operationId: publishWorkflow
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishRequest' }
+      responses:
+        '201':
+          description: New immutable Version, automatically activated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, execution_snapshot]
+                additionalProperties: false
+                properties:
+                  version: { $ref: '#/components/schemas/PublishedVersion' }
+                  execution_snapshot: { $ref: '#/components/schemas/ExecutionSnapshot' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}/versions/{version_number}/activate:
+    post:
+      operationId: rollbackWorkflow
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+        - name: version_number
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Historical immutable Version selected as Active.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublishedVersion' }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ProjectID:
+      name: project_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WorkflowID:
+      name: workflow_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 200 }
+  schemas:
+    IRDocument:
+      type: object
+      description: Must conform to contracts/ir/v1/schema.json.
+    CreateWorkflowRequest:
+      type: object
+      required: [name, ir]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        ir: { $ref: '#/components/schemas/IRDocument' }
+    SaveDraftRequest:
+      type: object
+      required: [expected_revision, ir]
+      additionalProperties: false
+      properties:
+        expected_revision: { type: integer, format: int64, minimum: 1 }
+        ir: { $ref: '#/components/schemas/IRDocument' }
+    RevisionRequest:
+      type: object
+      required: [revision]
+      additionalProperties: false
+      properties:
+        revision: { type: integer, format: int64, minimum: 1 }
+    PublishRequest:
+      type: object
+      required: [expected_revision, change_log]
+      additionalProperties: false
+      properties:
+        expected_revision: { type: integer, format: int64, minimum: 1 }
+        change_log: { type: string, maxLength: 4000 }
+    CopyWorkflowRequest:
+      type: object
+      required: [source_workflow_id, source_version_number, name]
+      additionalProperties: false
+      properties:
+        source_workflow_id: { type: string, format: uuid }
+        source_version_number: { type: integer, format: int64, minimum: 1 }
+        name: { type: string, minLength: 1, maxLength: 200 }
+    Workflow:
+      type: object
+      required: [workflow_id, project_id, name, created_by, created_at, updated_at]
+      properties:
+        workflow_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        name: { type: string }
+        active_version_id: { type: [string, 'null'], format: uuid }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    DraftRevision:
+      type: object
+      required: [draft_revision_id, project_id, workflow_id, revision_number, ir, catalog_revision, created_by, created_at]
+      properties:
+        draft_revision_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        revision_number: { type: integer, format: int64 }
+        ir: { $ref: '#/components/schemas/IRDocument' }
+        catalog_revision: { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        cloned_from_version_id: { type: [string, 'null'], format: uuid }
+    Draft:
+      type: object
+      required: [project_id, workflow_id, current_revision, state_version, current]
+      properties:
+        project_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        current_revision: { type: integer, format: int64 }
+        state_version: { type: integer, format: int64 }
+        current: { $ref: '#/components/schemas/DraftRevision' }
+    PublishedVersion:
+      type: object
+      required: [version_id, project_id, workflow_id, version_number, source_draft_revision_id, execution_snapshot_id, change_log, created_by, created_at]
+      properties:
+        version_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        version_number: { type: integer, format: int64 }
+        source_draft_revision_id: { type: string, format: uuid }
+        execution_snapshot_id: { type: string, format: uuid }
+        change_log: { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+    ExecutionSnapshot:
+      type: object
+      readOnly: true
+      required: [snapshot_id, project_id, workflow_id, origin_kind, origin_id, ir, dsl, source_map, compiler_manifest, ir_hash, dsl_hash, source_map_hash, definition_hash, created_at]
+      properties:
+        snapshot_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        origin_kind: { type: string, enum: [draft_test, published] }
+        origin_id: { type: string, format: uuid }
+        ir: { type: object }
+        dsl: { type: object }
+        source_map: { type: object }
+        compiler_manifest: { type: object }
+        ir_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        dsl_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        source_map_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        definition_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        created_at: { type: string, format: date-time }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable, request_id, trace_id]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+            request_id: { type: string }
+            trace_id: { type: string }
+            details: { type: [object, 'null'] }
+  responses:
+    WorkflowCreated:
+      description: Workflow and immutable Draft Revision 1.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [workflow, draft_revision]
+            additionalProperties: false
+            properties:
+              workflow: { $ref: '#/components/schemas/Workflow' }
+              draft_revision: { $ref: '#/components/schemas/DraftRevision' }
+    Error:
+      description: Stable machine-readable error envelope.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
