@@ -38,6 +38,7 @@ func TestRulesRejectForbiddenImports(t *testing.T) {
 		{"worker database", "internal/worker/runtime", "internal/adapters/postgres", "workers must not"},
 		{"HTTP API database", "internal/adapters/httpapi", "internal/adapters/postgres", "application ports"},
 		{"runtime authoring", "internal/runtime/engine", "internal/ir", "authoring models"},
+		{"runtime root authoring", "internal/runtime", "internal/definition", "authoring models"},
 		{"scheduler engine", "internal/scheduling", "internal/runtime/engine", "control semantics"},
 		{"compiler kafka", "internal/compiler", "github.com/twmb/franz-go", "compiler must remain deterministic"},
 	}
