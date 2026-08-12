@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M5 Runtime PostgreSQL、Outbox/Inbox 与事件驱动推进已实现，下一阶段为 M6 Project 公平 Scheduler 与 Scheduling Redis**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M6 Project 公平 Scheduler、Scheduling Redis 与原子 Task Dispatch 已实现，下一阶段为 M7 Kafka、Worker Runtime、Attempt API 与 Execution Context**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -151,14 +151,29 @@ M5 已将 M4 Aggregate 映射到真实 PostgreSQL 权威状态与可恢复事件
 - Outbox Relay 使用 `FOR UPDATE SKIP LOCKED` 与有期限 Claim，可在发布前或发布后崩溃后恢复；重复发布由 Inbox 收敛；
 - `node_output_values` 保存候选值，只有 `node_runs.effective_attempt_id` 被 Engine 接受后才对下游有效。
 
-M5 只定义版本化 Runtime Event DTO 与 Publisher Port，尚未连接真实 Kafka Broker；也未实现 `ready → queued + Attempt + NodeTask Outbox`，该原子派发边界属于 M6。External Run HTTP API、Worker Transport 和 Execution Context Cache-Aside 仍分别属于后续里程碑。
+M5 只定义版本化 Runtime Event DTO 与 Publisher Port，尚未连接真实 Kafka Broker。M6 已补齐 `ready → queued + Attempt + Node Task Outbox` 原子派发；真实 Kafka Task Publisher、Worker Transport、动态 Worker 健康槽采集和 Execution Context Cache-Aside 仍属于 M7。
+
+## M6 Project 公平 Scheduler
+
+M6 已把 Scheduler 作为 Control Plane 内独立逻辑模块接入生产生命周期：
+
+- 公平身份只有 `project_id`，跨 Project 使用等权 Max-Min，低需求释放的容量可被其他 Project 借用；
+- Project 内严格按 `priority DESC, ready_at ASC, node_run_id ASC`；固定 Lane 使用稳定 FNV-1a Hash；
+- Credit Balancer 通过 Redis Lease/Fencing 单实例计算额度，所有 Scheduler 实例均可消费共享 Lane Credit；
+- Ready Hash、Active Project、Project Credit、Grant Queue、Inflight Reservation 全部使用 Lane Hash Tag 共槽并由 Lua 原子操作；
+- Global/Pool Dispatch Window 来源于健康槽位和 Buffer Factor，每 Epoch 的容量变化受共享 Window State 限幅；
+- PostgreSQL 对每个 Active Project 最多读取一个 Dispatch Window 的有序候选，既避免把完整 Ready 队列搬入 Control Plane，也保留低需求项目释放容量后的借用能力；
+- PostgreSQL 事务原子完成 `ready → queued + Attempt + node_task_outbox`，数据库 CAS 是最终裁决；
+- Redis 为空、超时或丢失时暂停新准入，Balancer 从 PostgreSQL Ready/Queued/Running 重建后才重新开放。
+
+M6 的 `node_task_outbox` 是 M7 Kafka Publisher 的可靠输入，本阶段不会提前把 Task 发到 Kafka，也不会让 Worker 消费它。
 
 ## 开发检查
 
 ```bash
 go test ./...
 go test -race ./...
-go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine ./internal/runtime/attempt ./internal/eventing
+go test -count=20 ./contracts/ir ./contracts/dsl ./contracts/source-map ./contracts/openapi ./internal/ir ./internal/catalog ./internal/dsl ./internal/sourcemap ./internal/compiler ./internal/access ./internal/resources ./internal/adapters/httpapi ./internal/runtime ./internal/runtime/engine ./internal/runtime/attempt ./internal/eventing ./internal/scheduling
 go test ./internal/ir -run='^$' -fuzz=FuzzParser -fuzztime=5s
 go test ./internal/ir -run='^$' -fuzz=FuzzLogicalID -fuzztime=5s
 go vet ./...
@@ -166,7 +181,7 @@ go build ./cmd/...
 go test -tags=integration ./tests/integration
 ```
 
-架构测试会扫描仓库依赖，并拒绝 Domain 导入 Adapter、Compiler 导入 HTTP/PostgreSQL/Redis/Kafka Client、Worker 导入 PostgreSQL Adapter、Runtime 读取作者态模型、Scheduler 导入 Engine，以及新增 `common/utils/service/pkg` 等逃逸边界的目录。
+架构测试会扫描仓库依赖，并拒绝 Domain 导入 Adapter、Compiler 导入 HTTP/PostgreSQL/Redis/Kafka Client、Worker 导入 PostgreSQL Adapter、Runtime 读取作者态模型、Scheduler 导入 Engine 或基础设施 Client，以及新增 `common/utils/service/pkg` 等逃逸边界的目录。
 
 ## 核心架构原则
 

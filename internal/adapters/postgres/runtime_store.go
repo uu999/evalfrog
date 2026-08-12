@@ -13,6 +13,7 @@ import (
 	"github.com/uu999/evalfrog/internal/eventing"
 	"github.com/uu999/evalfrog/internal/runtime"
 	"github.com/uu999/evalfrog/internal/runtime/engine"
+	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
 func (store *Store) CreatePendingRun(ctx context.Context, record runtime.CreatePendingRunRecord) (runtime.WorkflowRunRecord, error) {
@@ -138,7 +139,11 @@ func commandName(purpose runtime.RunPurpose) string {
 	return "create_run"
 }
 
-type runtimeTransaction struct{ tx pgx.Tx }
+type runtimeTransaction struct {
+	tx       pgx.Tx
+	router   scheduling.Router
+	snapshot *engine.Snapshot
+}
 
 func (store *Store) WithRunTransaction(ctx context.Context, event eventing.RuntimeEvent, operation func(engine.RunTransaction) error) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -146,7 +151,7 @@ func (store *Store) WithRunTransaction(ctx context.Context, event eventing.Runti
 		return err
 	}
 	defer tx.Rollback(ctx)
-	adapter := &runtimeTransaction{tx: tx}
+	adapter := &runtimeTransaction{tx: tx, router: store.router}
 	if err = operation(adapter); err != nil {
 		return err
 	}
@@ -182,6 +187,7 @@ func (transaction *runtimeTransaction) LoadSnapshot(ctx context.Context, project
 	if err = json.Unmarshal(raw, &result.DSL); err != nil {
 		return engine.Snapshot{}, fmt.Errorf("decode immutable runtime DSL: %w", err)
 	}
+	transaction.snapshot = &result
 	return result, nil
 }
 
@@ -288,7 +294,26 @@ func (transaction *runtimeTransaction) LoadEngineState(ctx context.Context, proj
 }
 
 func (transaction *runtimeTransaction) InitializeRun(ctx context.Context, before runtime.WorkflowRunRecord, after engine.State, at time.Time) error {
+	if transaction.snapshot == nil || transaction.router == nil {
+		return fmt.Errorf("runtime snapshot and routing policy are required for initialization")
+	}
+	definitions := make(map[string]dsl.Node, len(transaction.snapshot.DSL.Nodes))
+	for _, definition := range transaction.snapshot.DSL.Nodes {
+		definitions[string(definition.ID)] = definition
+	}
 	for _, node := range after.Nodes {
+		definition, exists := definitions[node.ExecutionNodeID]
+		if !exists {
+			return fmt.Errorf("runtime node %q is absent from immutable snapshot", node.ExecutionNodeID)
+		}
+		var resourceClass any
+		if node.Kind == runtime.NodeTask {
+			resolved, routable := transaction.router.Resolve(definition.Operation.Coordinate())
+			if !routable {
+				return fmt.Errorf("runtime operation %s@%d has no routing policy", definition.Operation.Type, definition.Operation.Version)
+			}
+			resourceClass = resolved
+		}
 		nodeRunID := deterministicNodeRunID(after.Run.ID, node.ExecutionNodeID)
 		var readyAt any
 		if node.State == runtime.NodeReady {
@@ -297,12 +322,14 @@ func (transaction *runtimeTransaction) InitializeRun(ctx context.Context, before
 		_, err := transaction.tx.Exec(ctx, `
 			INSERT INTO node_runs (
 				node_run_id, project_id, run_id, execution_node_id, kind, state, state_version,
+				operation_type, operation_version, resource_class,
 				activated, selected_route, resolved_inputs_json, next_attempt_seq,
 				business_attempt_count, recovery_count, next_attempt_kind, priority,
 				ready_at, next_retry_at, failure_json, cancel_reason, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,$16,$17,$18,$19,$19)`,
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,0,$18,$19,$20,$21,$22,$22)`,
 			nodeRunID, after.Run.ProjectID, after.Run.ID, node.ExecutionNodeID, node.Kind,
-			node.State, node.StateVersion, node.Activated, node.SelectedRoute,
+			node.State, node.StateVersion, definition.Operation.Type, definition.Operation.Version, resourceClass,
+			node.Activated, node.SelectedRoute,
 			nullableJSON(node.ResolvedInputs), node.NextAttemptSeq, node.BusinessAttemptCount,
 			node.RecoveryCount, node.NextAttemptKind, readyAt, nullableTime(node.NextRetryAt),
 			nullableJSON(node.Failure), node.CancelReason, at)
