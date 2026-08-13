@@ -19,6 +19,8 @@ import (
 	"github.com/uu999/evalfrog/internal/platform/logging"
 	"github.com/uu999/evalfrog/internal/platform/metrics"
 	"github.com/uu999/evalfrog/internal/scheduling"
+	hexecutor "github.com/uu999/evalfrog/internal/worker/executor/http"
+	rpcexecutor "github.com/uu999/evalfrog/internal/worker/executor/rpc"
 	workerruntime "github.com/uu999/evalfrog/internal/worker/runtime"
 )
 
@@ -56,9 +58,11 @@ func RunProcess(ctx context.Context, arguments []string, resourceClass string, o
 	class := scheduling.ResourceClass(resourceClass)
 	topic := configuration.Kafka.Topics.BuiltinTask
 	slots := configuration.Worker.BuiltinSlots
+	apiTimeout := max(configuration.Worker.ClaimTimeout.Duration(), configuration.Worker.CompleteTimeout.Duration())
+	controlPlane := workerapi.New(configuration.Endpoints.ControlPlaneURL, apiTimeout)
 	executors := []workerruntime.Executor{
-		workerruntime.EchoTestExecutor{Operation: dsl.Coordinate{Type: "task.http", Version: 1}},
-		workerruntime.EchoTestExecutor{Operation: dsl.Coordinate{Type: "task.rpc", Version: 1}},
+		hexecutor.NewExecutor(controlPlane, nil),
+		rpcexecutor.NewExecutor(controlPlane, rpcexecutor.JSONInvoker{}),
 	}
 	if class == scheduling.ResourceSandbox {
 		topic = configuration.Kafka.Topics.SandboxTask
@@ -69,8 +73,8 @@ func RunProcess(ctx context.Context, arguments []string, resourceClass string, o
 		logger.Error("worker resource class is invalid", "resource_class", resourceClass)
 		return 1
 	}
-	if configuration.Profile == "production-default" {
-		logger.Error("M7 protocol test executor is forbidden in production-default; install M8/M9 executors")
+	if configuration.Profile == "production-default" && class == scheduling.ResourceSandbox {
+		logger.Error("M9 sandbox executor is not available in production-default")
 		return 1
 	}
 	// A fetched batch holds the Kafka rebalance gate until every record has
@@ -84,8 +88,6 @@ func RunProcess(ctx context.Context, arguments []string, resourceClass string, o
 		return 1
 	}
 	defer kafkaClient.Close()
-	apiTimeout := max(configuration.Worker.ClaimTimeout.Duration(), configuration.Worker.CompleteTimeout.Duration())
-	controlPlane := workerapi.New(configuration.Endpoints.ControlPlaneURL, apiTimeout)
 	readiness := health.New(configuration.Redis.Cache.OperationTimeout.Duration())
 	mustRegister(logger, readiness, "kafka", kafkaClient.Check)
 	mustRegister(logger, readiness, "control-plane", controlPlane.Check)

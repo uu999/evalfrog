@@ -38,7 +38,7 @@ func TestM3ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 	}
 }
 
-func TestM7WorkerContractContainsOnlyInternalCoordinationSurface(t *testing.T) {
+func TestM8WorkerContractContainsOnlyInternalCoordinationSurface(t *testing.T) {
 	raw, err := os.ReadFile("worker-v1.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestM7WorkerContractContainsOnlyInternalCoordinationSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths, ok := document["paths"].(map[string]any)
-	if !ok || len(paths) != 5 {
+	if !ok || len(paths) != 7 {
 		t.Fatalf("unexpected worker paths: %#v", document["paths"])
 	}
 	for path := range paths {

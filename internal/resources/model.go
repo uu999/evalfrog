@@ -27,6 +27,22 @@ type Connection struct {
 	Reference string
 }
 
+// ConnectionRuntime is the non-authoring material resolved for one attempt.
+// SecretHeaders are transient executor material: they must never be copied to
+// IR, DSL, Kafka, execution context, or ordinary logs.
+type ConnectionRuntime struct {
+	ID                  string            `json:"id"`
+	ProjectID           string            `json:"project_id"`
+	Revision            uint64            `json:"revision"`
+	BaseURL             string            `json:"base_url"`
+	AllowedMethods      map[string]bool   `json:"allowed_methods,omitempty"`
+	MaxRequestBytes     int64             `json:"max_request_bytes"`
+	MaxResponseBytes    int64             `json:"max_response_bytes"`
+	AllowedPathPrefixes []string          `json:"allowed_path_prefixes,omitempty"`
+	SecretReferenceID   string            `json:"-"`
+	SecretHeaders       map[string]string `json:"secret_headers,omitempty"`
+}
+
 type ServiceOperation struct {
 	ServiceID        string
 	ProjectID        string
@@ -34,6 +50,60 @@ type ServiceOperation struct {
 	Operation        string
 	ContractRevision string
 	Idempotent       bool
+}
+
+type ServiceOperationRuntime struct {
+	ServiceOperation
+	Revision           uint64            `json:"revision"`
+	Protocol           string            `json:"protocol"`
+	DiscoveryReference string            `json:"discovery_reference"`
+	RequestSchema      map[string]any    `json:"request_schema,omitempty"`
+	ResponseSchema     map[string]any    `json:"response_schema,omitempty"`
+	SecretReferenceID  string            `json:"-"`
+	SecretHeaders      map[string]string `json:"secret_headers,omitempty"`
+}
+
+type RuntimeResolveCommand struct {
+	ProjectID, RunID, AttemptID string
+	AttemptSequence             uint32
+	LeaseToken                  string
+	FencingToken                uint64
+	ConnectionID                string
+	ServiceID                   string
+	Operation                   string
+	ContractRevision            string
+}
+
+// RuntimeResolver is the narrow Control Plane port used by Builtin Workers.
+// Its implementation revalidates the attempt lease and project execution
+// identity before returning managed resource material.
+type RuntimeResolver interface {
+	ResolveConnection(context.Context, RuntimeResolveCommand) (ConnectionRuntime, error)
+	ResolveServiceOperation(context.Context, RuntimeResolveCommand) (ServiceOperationRuntime, error)
+}
+
+// SecretResolver is deliberately a port. Implementations may use a vault,
+// cloud secret manager, or an in-memory test provider. Plaintext is returned
+// only to the executor call path and is never part of an immutable artifact.
+type SecretResolver interface {
+	Resolve(context.Context, string) (map[string]string, error)
+}
+
+type NoopSecretResolver struct{}
+
+func (NoopSecretResolver) Resolve(context.Context, string) (map[string]string, error) {
+	return nil, errors.New("secret resolver is not configured")
+}
+
+type StaticSecretResolver map[string]map[string]string
+
+func (resolver StaticSecretResolver) Resolve(_ context.Context, reference string) (map[string]string, error) {
+	values := resolver[reference]
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result, nil
 }
 
 type Repository interface {

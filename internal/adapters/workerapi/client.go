@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uu999/evalfrog/internal/resources"
 	"github.com/uu999/evalfrog/internal/runtime/attempt"
 	runtimecontext "github.com/uu999/evalfrog/internal/runtime/context"
 	"github.com/uu999/evalfrog/internal/scheduling"
@@ -102,6 +103,25 @@ func (client *Client) Load(ctx context.Context, command runtimecontext.LoadComma
 	if err := client.post(ctx, "/internal/v1/attempts/"+command.AttemptID+"/context", body, &response); err != nil {
 		return runtimecontext.ExecutionContext{}, err
 	}
+	response.LeaseToken, response.FencingToken = command.LeaseToken, command.FencingToken
+	return response, nil
+}
+
+func (client *Client) ResolveConnection(ctx context.Context, command resources.RuntimeResolveCommand) (resources.ConnectionRuntime, error) {
+	body := resourceRequest{ProjectID: command.ProjectID, RunID: command.RunID, AttemptSequence: command.AttemptSequence, LeaseToken: command.LeaseToken, FencingToken: command.FencingToken, ConnectionID: command.ConnectionID}
+	var response resources.ConnectionRuntime
+	if err := client.post(ctx, "/internal/v1/attempts/"+command.AttemptID+"/resources/connection", body, &response); err != nil {
+		return resources.ConnectionRuntime{}, err
+	}
+	return response, nil
+}
+
+func (client *Client) ResolveServiceOperation(ctx context.Context, command resources.RuntimeResolveCommand) (resources.ServiceOperationRuntime, error) {
+	body := resourceRequest{ProjectID: command.ProjectID, RunID: command.RunID, AttemptSequence: command.AttemptSequence, LeaseToken: command.LeaseToken, FencingToken: command.FencingToken, ServiceID: command.ServiceID, Operation: command.Operation, ContractRevision: command.ContractRevision}
+	var response resources.ServiceOperationRuntime
+	if err := client.post(ctx, "/internal/v1/attempts/"+command.AttemptID+"/resources/service-operation", body, &response); err != nil {
+		return resources.ServiceOperationRuntime{}, err
+	}
 	return response, nil
 }
 
@@ -152,4 +172,6 @@ var _ interface {
 	Heartbeat(context.Context, attempt.HeartbeatCommand) (attempt.Lease, error)
 	Complete(context.Context, attempt.CompleteCommand) (bool, error)
 	Load(context.Context, runtimecontext.LoadCommand) (runtimecontext.ExecutionContext, error)
+	ResolveConnection(context.Context, resources.RuntimeResolveCommand) (resources.ConnectionRuntime, error)
+	ResolveServiceOperation(context.Context, resources.RuntimeResolveCommand) (resources.ServiceOperationRuntime, error)
 } = (*Client)(nil)

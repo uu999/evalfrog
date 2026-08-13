@@ -387,4 +387,7 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0-M7 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis，以及 Kafka/Worker 分布式执行骨架。当前 Worker 使用仅限 local/test 的协议测试 Executor；M8-M10 才交付真实 HTTP/RPC、Python Sandbox、完整 External Run API、CLI 与 Web 闭环，README 不把这些计划能力描述成当前成果。
+M0-M8 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架，以及受管 HTTP/RPC Builtin Executor。Python Sandbox、完整 External Run API、CLI 与 Web 闭环仍属于后续阶段；README 不把计划能力描述成当前成果。
+## M8 Runtime Status
+
+M8 is implemented: Builtin Worker now executes managed HTTP/RPC nodes with Connection-relative paths, Service Catalog operation binding, runtime identity checks, Secret Resolver Port, stable idempotency keys, and Attempt Resource Revision audit. Python Sandbox remains M9.
