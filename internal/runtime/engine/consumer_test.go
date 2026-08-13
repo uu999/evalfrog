@@ -32,6 +32,8 @@ type fakeRunTx struct {
 	initializeError   error
 	advanceError      error
 	failInitError     error
+	advancedBefore    State
+	advancedAfter     State
 }
 
 func (tx *fakeRunTx) AcceptInbox(context.Context, string, eventing.RuntimeEvent) (bool, error) {
@@ -50,8 +52,9 @@ func (tx *fakeRunTx) InitializeRun(_ context.Context, _ runtime.WorkflowRunRecor
 	tx.initialized = true
 	return tx.initializeError
 }
-func (tx *fakeRunTx) AdvanceRun(_ context.Context, _, _ State, _ time.Time) error {
+func (tx *fakeRunTx) AdvanceRun(_ context.Context, before, after State, _ time.Time) error {
 	tx.advanced = true
+	tx.advancedBefore, tx.advancedAfter = before, after
 	return tx.advanceError
 }
 func (tx *fakeRunTx) FailRunInitialization(_ context.Context, _, _ runtime.WorkflowRunRecord, _ time.Time) error {
@@ -124,6 +127,35 @@ func TestConsumerIgnoresTerminalRunEvent(t *testing.T) {
 	event := testRuntimeEvent(eventing.RunDeadlineReached, "run", "run", harness.Now().Add(time.Hour))
 	if err := consumer.Consume(context.Background(), event); err != nil || tx.advanced {
 		t.Fatalf("advanced=%v err=%v", tx.advanced, err)
+	}
+}
+
+func TestConsumerCancelBeforeRunInitializationConvergesWithoutNodeRuns(t *testing.T) {
+	harness := newTestHarness(t, linearDocument(1))
+	state := harness.Engine.SnapshotState()
+	pending, err := runtime.NewWorkflowRun(runtime.CreateRunCommand{
+		RunID: state.Run.ID, ProjectID: state.Run.ProjectID, WorkflowID: state.Run.WorkflowID,
+		Purpose: state.Run.Purpose, Definition: state.Run.Definition, WorkflowInput: state.Run.WorkflowInput,
+		CreatedAt: state.Run.CreatedAt, DeadlineAt: state.Run.DeadlineAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := State{Run: pending.Snapshot()}
+	consumer, _ := NewConsumer(&fakeTransactions{tx: &fakeRunTx{accepted: true, state: before}})
+	event := testRuntimeEvent(eventing.RunCancelRequested, before.Run.ID, before.Run.ID, harness.Now())
+	if err = consumer.Consume(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	tx := consumer.transactions.(*fakeTransactions).tx
+	if !tx.advanced || tx.advancedBefore.Run.State != runtime.RunPending || tx.advancedAfter.Run.State != runtime.RunCanceled || tx.advancedAfter.Run.Termination == nil || tx.advancedAfter.Run.Termination.Cause.Code != FailureRunCanceled || len(tx.advancedAfter.Nodes) != 0 {
+		t.Fatalf("before=%+v after=%+v advanced=%v", tx.advancedBefore.Run, tx.advancedAfter.Run, tx.advanced)
+	}
+
+	ignoredTx := &fakeRunTx{accepted: true, state: before}
+	ignored, _ := NewConsumer(&fakeTransactions{tx: ignoredTx})
+	if err = ignored.Consume(context.Background(), testRuntimeEvent(eventing.RunDeadlineReached, before.Run.ID, before.Run.ID, harness.Now())); err != nil || ignoredTx.advanced {
+		t.Fatalf("pending non-cancel advanced=%v err=%v", ignoredTx.advanced, err)
 	}
 }
 

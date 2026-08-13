@@ -17,12 +17,14 @@ func TestAttemptFailurePreservesReportedDSLField(t *testing.T) {
 	if err != nil || len(attempts) != 1 {
 		t.Fatalf("attempts=%v err=%v", attempts, err)
 	}
-	if err = harness.Complete(attempts[0], runtime.AttemptResult{State: runtime.AttemptFailed, ErrorCode: "CODE_RUNTIME_ERROR", Message: "bad", DSLField: "operation.config.source_code"}); err != nil {
+	details := map[string]any{"line": 3}
+	if err = harness.Complete(attempts[0], runtime.AttemptResult{State: runtime.AttemptFailed, ErrorCode: "CODE_RUNTIME_ERROR", Message: "bad", DSLField: "operation.config.source_code", ErrorDetails: details}); err != nil {
 		t.Fatal(err)
 	}
+	details["line"] = 4
 	node, _ := harness.Engine.Node(harness.Engine.attemptNodes[attempts[0]])
 	failure, exists := node.Failure()
-	if !exists || failure.DSLField != "operation.config.source_code" {
+	if !exists || failure.DSLField != "operation.config.source_code" || failure.Details["line"] != 3 {
 		t.Fatalf("failure=%+v exists=%v", failure, exists)
 	}
 }
