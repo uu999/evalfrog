@@ -6,16 +6,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/uu999/evalfrog/internal/access"
+	"github.com/uu999/evalfrog/internal/catalog"
 	"github.com/uu999/evalfrog/internal/definition"
 	"github.com/uu999/evalfrog/internal/ir"
 	"github.com/uu999/evalfrog/internal/platform/identity"
 	"github.com/uu999/evalfrog/internal/platform/traceid"
+	"github.com/uu999/evalfrog/internal/projection"
+	"github.com/uu999/evalfrog/internal/resources"
+	"github.com/uu999/evalfrog/internal/runtime"
+	"github.com/uu999/evalfrog/internal/workflowapp"
 )
 
 const maxRequestBytes = 2 << 20
@@ -24,36 +31,55 @@ type Authenticator interface {
 	Authenticate(context.Context, string) (access.Principal, error)
 }
 
-type DefinitionApplication interface {
+type RunUpdateSubscriber interface {
+	SubscribeRunUpdates(context.Context, string) (<-chan string, func())
+}
+
+type Application interface {
 	CreateWorkflow(context.Context, definition.CreateWorkflowCommand) (definition.Workflow, definition.DraftRevision, []ir.Diagnostic, error)
 	GetWorkflow(context.Context, string, string, string) (definition.Workflow, error)
 	GetDraft(context.Context, string, string, string) (definition.Draft, error)
 	SaveDraft(context.Context, definition.SaveDraftCommand) (definition.DraftRevision, []ir.Diagnostic, error)
 	ValidateDraft(context.Context, string, string, string, int64) ([]ir.Diagnostic, error)
-	CompileDraftTestSnapshot(context.Context, string, string, string, int64) (definition.ExecutionSnapshot, []ir.Diagnostic, error)
 	Publish(context.Context, definition.PublishCommand) (definition.PublishedVersion, definition.ExecutionSnapshot, []ir.Diagnostic, error)
 	Rollback(context.Context, string, string, string, int64) (definition.PublishedVersion, error)
 	CopyPublishedVersion(context.Context, definition.CopyCommand) (definition.Workflow, definition.DraftRevision, error)
+	TestDraft(context.Context, workflowapp.TestDraftCommand) (runtime.WorkflowRunRecord, []ir.Diagnostic, error)
+	CreateRun(context.Context, workflowapp.CreateRunCommand) (runtime.WorkflowRunRecord, error)
+	CancelRun(context.Context, string, string, string, string) (runtime.WorkflowRunRecord, bool, error)
+	GetRun(context.Context, string, string, string) (projection.RunView, error)
+	NodeTypes() []catalog.NodeDescription
+	Connections(context.Context, string, string) ([]resources.ConnectionSummary, error)
 }
 
 type Handler struct {
 	authenticator Authenticator
-	definition    DefinitionApplication
+	application   Application
 	ids           identity.Generator
 	router        *http.ServeMux
+	updates       RunUpdateSubscriber
 }
 
-func New(authenticator Authenticator, application DefinitionApplication) *Handler {
-	handler := &Handler{authenticator: authenticator, definition: application, ids: identity.UUIDv7Generator{}, router: http.NewServeMux()}
+func New(authenticator Authenticator, application Application, updates ...RunUpdateSubscriber) *Handler {
+	handler := &Handler{authenticator: authenticator, application: application, ids: identity.UUIDv7Generator{}, router: http.NewServeMux()}
+	if len(updates) != 0 {
+		handler.updates = updates[0]
+	}
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows", handler.createWorkflow)
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows:copy", handler.copyWorkflow)
 	handler.router.HandleFunc("GET /v1/projects/{project_id}/workflows/{workflow_id}", handler.getWorkflow)
 	handler.router.HandleFunc("GET /v1/projects/{project_id}/workflows/{workflow_id}/draft", handler.getDraft)
 	handler.router.HandleFunc("PUT /v1/projects/{project_id}/workflows/{workflow_id}/draft", handler.saveDraft)
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/draft/validate", handler.validateDraft)
-	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/draft/test-snapshots", handler.compileTestSnapshot)
+	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/draft/test", handler.testDraft)
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/publish", handler.publish)
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/versions/{version_number}/activate", handler.rollback)
+	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/runs", handler.createRun)
+	handler.router.HandleFunc("GET /v1/projects/{project_id}/runs/{run_id}", handler.getRun)
+	handler.router.HandleFunc("GET /v1/projects/{project_id}/runs/{run_id}/events", handler.runEvents)
+	handler.router.HandleFunc("POST /v1/projects/{project_id}/runs/{run_id}/cancel", handler.cancelRun)
+	handler.router.HandleFunc("GET /v1/node-types", handler.nodeTypes)
+	handler.router.HandleFunc("GET /v1/projects/{project_id}/connections", handler.connections)
 	return handler
 }
 
@@ -66,6 +92,20 @@ type createWorkflowRequest struct {
 	IR   json.RawMessage `json:"ir"`
 }
 
+// runCommandResponse is intentionally smaller than the Runtime persistence
+// record. Clients use GET Run for the current projected state; creating or
+// cancelling a Run must not leak snapshot/definition implementation details.
+type runCommandResponse struct {
+	RunID     string             `json:"run_id"`
+	Purpose   runtime.RunPurpose `json:"purpose"`
+	State     runtime.RunState   `json:"state"`
+	CreatedAt time.Time          `json:"created_at"`
+}
+
+func newRunCommandResponse(run runtime.WorkflowRunRecord) runCommandResponse {
+	return runCommandResponse{RunID: run.ID, Purpose: run.Purpose, State: run.State, CreatedAt: run.CreatedAt}
+}
+
 func (handler *Handler) createWorkflow(writer http.ResponseWriter, request *http.Request) {
 	principal, ok := handler.authenticate(writer, request)
 	if !ok {
@@ -75,7 +115,7 @@ func (handler *Handler) createWorkflow(writer http.ResponseWriter, request *http
 	if !handler.decode(writer, request, &body) {
 		return
 	}
-	workflow, revision, diagnostics, err := handler.definition.CreateWorkflow(request.Context(), definition.CreateWorkflowCommand{
+	workflow, revision, diagnostics, err := handler.application.CreateWorkflow(request.Context(), definition.CreateWorkflowCommand{
 		ProjectID: request.PathValue("project_id"), PrincipalID: principal.ID, Name: body.Name,
 		IRJSON: body.IR, IdempotencyKey: request.Header.Get("Idempotency-Key"),
 	})
@@ -98,7 +138,7 @@ func (handler *Handler) copyWorkflow(writer http.ResponseWriter, request *http.R
 	if !handler.decode(writer, request, &body) {
 		return
 	}
-	workflow, revision, err := handler.definition.CopyPublishedVersion(request.Context(), definition.CopyCommand{
+	workflow, revision, err := handler.application.CopyPublishedVersion(request.Context(), definition.CopyCommand{
 		ProjectID: request.PathValue("project_id"), PrincipalID: principal.ID,
 		SourceWorkflowID: body.SourceWorkflowID, SourceVersionNumber: body.SourceVersionNumber,
 		Name: body.Name, IdempotencyKey: request.Header.Get("Idempotency-Key"),
@@ -114,7 +154,7 @@ func (handler *Handler) getWorkflow(writer http.ResponseWriter, request *http.Re
 	if !ok {
 		return
 	}
-	workflow, err := handler.definition.GetWorkflow(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"))
+	workflow, err := handler.application.GetWorkflow(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"))
 	if handler.writeResultError(writer, request, nil, err) {
 		return
 	}
@@ -126,7 +166,7 @@ func (handler *Handler) getDraft(writer http.ResponseWriter, request *http.Reque
 	if !ok {
 		return
 	}
-	draft, err := handler.definition.GetDraft(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"))
+	draft, err := handler.application.GetDraft(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"))
 	if handler.writeResultError(writer, request, nil, err) {
 		return
 	}
@@ -145,7 +185,7 @@ func (handler *Handler) saveDraft(writer http.ResponseWriter, request *http.Requ
 	if !handler.decode(writer, request, &body) {
 		return
 	}
-	revision, diagnostics, err := handler.definition.SaveDraft(request.Context(), definition.SaveDraftCommand{
+	revision, diagnostics, err := handler.application.SaveDraft(request.Context(), definition.SaveDraftCommand{
 		ProjectID: request.PathValue("project_id"), PrincipalID: principal.ID, WorkflowID: request.PathValue("workflow_id"),
 		ExpectedRevision: body.ExpectedRevision, IRJSON: body.IR, IdempotencyKey: request.Header.Get("Idempotency-Key"),
 	})
@@ -160,23 +200,39 @@ func (handler *Handler) validateDraft(writer http.ResponseWriter, request *http.
 	if !ok {
 		return
 	}
-	diagnostics, err := handler.definition.ValidateDraft(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"), revision)
+	diagnostics, err := handler.application.ValidateDraft(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"), revision)
 	if handler.writeResultError(writer, request, nil, err) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"valid": !ir.HasErrors(diagnostics), "diagnostics": diagnostics})
 }
 
-func (handler *Handler) compileTestSnapshot(writer http.ResponseWriter, request *http.Request) {
-	principal, revision, ok := handler.principalAndRevision(writer, request)
+func (handler *Handler) testDraft(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
 	if !ok {
 		return
 	}
-	snapshot, diagnostics, err := handler.definition.CompileDraftTestSnapshot(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"), revision)
+	var body struct {
+		Revision   int64           `json:"revision"`
+		Input      json.RawMessage `json:"input"`
+		DeadlineAt time.Time       `json:"deadline_at"`
+	}
+	if !handler.decode(writer, request, &body) {
+		return
+	}
+	if body.Revision < 1 || len(body.Input) == 0 || body.DeadlineAt.IsZero() {
+		handler.writeError(writer, request, http.StatusBadRequest, definition.CodeInvalidArgument, "revision, input and deadline_at are required", nil)
+		return
+	}
+	run, diagnostics, err := handler.application.TestDraft(request.Context(), workflowapp.TestDraftCommand{
+		ProjectID: request.PathValue("project_id"), PrincipalID: principal.ID, WorkflowID: request.PathValue("workflow_id"),
+		Revision: body.Revision, WorkflowInput: body.Input, DeadlineAt: body.DeadlineAt,
+		IdempotencyKey: request.Header.Get("Idempotency-Key"), TraceID: traceid.From(request.Context()),
+	})
 	if handler.writeResultError(writer, request, diagnostics, err) {
 		return
 	}
-	writeJSON(writer, http.StatusCreated, snapshot)
+	writeJSON(writer, http.StatusCreated, newRunCommandResponse(run))
 }
 
 func (handler *Handler) publish(writer http.ResponseWriter, request *http.Request) {
@@ -191,14 +247,17 @@ func (handler *Handler) publish(writer http.ResponseWriter, request *http.Reques
 	if !handler.decode(writer, request, &body) {
 		return
 	}
-	version, snapshot, diagnostics, err := handler.definition.Publish(request.Context(), definition.PublishCommand{
+	version, _, diagnostics, err := handler.application.Publish(request.Context(), definition.PublishCommand{
 		ProjectID: request.PathValue("project_id"), PrincipalID: principal.ID, WorkflowID: request.PathValue("workflow_id"),
 		ExpectedRevision: body.ExpectedRevision, ChangeLog: body.ChangeLog, IdempotencyKey: request.Header.Get("Idempotency-Key"),
 	})
 	if handler.writeResultError(writer, request, diagnostics, err) {
 		return
 	}
-	writeJSON(writer, http.StatusCreated, map[string]any{"version": version, "execution_snapshot": snapshot})
+	// DSL and Source Map are immutable server-side execution artifacts. The
+	// authoring contract returns only the Published Version; clients continue to
+	// author canonical IR and never depend on a reverse compilation boundary.
+	writeJSON(writer, http.StatusCreated, map[string]any{"version": version})
 }
 
 func (handler *Handler) rollback(writer http.ResponseWriter, request *http.Request) {
@@ -211,11 +270,125 @@ func (handler *Handler) rollback(writer http.ResponseWriter, request *http.Reque
 		handler.writeError(writer, request, http.StatusBadRequest, definition.CodeInvalidArgument, "version_number must be positive", nil)
 		return
 	}
-	version, err := handler.definition.Rollback(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"), versionNumber)
+	version, err := handler.application.Rollback(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("workflow_id"), versionNumber)
 	if handler.writeResultError(writer, request, nil, err) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, version)
+}
+
+func (handler *Handler) createRun(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	var body struct {
+		Input      json.RawMessage `json:"input"`
+		DeadlineAt time.Time       `json:"deadline_at"`
+	}
+	if !handler.decode(writer, request, &body) {
+		return
+	}
+	if len(body.Input) == 0 || body.DeadlineAt.IsZero() {
+		handler.writeError(writer, request, http.StatusBadRequest, definition.CodeInvalidArgument, "input and deadline_at are required", nil)
+		return
+	}
+	run, err := handler.application.CreateRun(request.Context(), workflowapp.CreateRunCommand{
+		ProjectID: request.PathValue("project_id"), PrincipalID: principal.ID, WorkflowID: request.PathValue("workflow_id"),
+		WorkflowInput: body.Input, DeadlineAt: body.DeadlineAt, IdempotencyKey: request.Header.Get("Idempotency-Key"), TraceID: traceid.From(request.Context()),
+	})
+	if handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	writeJSON(writer, http.StatusCreated, newRunCommandResponse(run))
+}
+
+func (handler *Handler) getRun(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	run, err := handler.application.GetRun(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("run_id"))
+	if handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	writeJSON(writer, http.StatusOK, run)
+}
+
+// runEvents is a lossy SSE wake-up channel. It never carries Runtime state;
+// the browser must GET the Run view first and after every notification.
+func (handler *Handler) runEvents(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	if handler.updates == nil {
+		handler.writeError(writer, request, http.StatusServiceUnavailable, "RUN_UPDATES_UNAVAILABLE", "run updates are temporarily unavailable", nil)
+		return
+	}
+	runID, projectID := request.PathValue("run_id"), request.PathValue("project_id")
+	if _, err := handler.application.GetRun(request.Context(), projectID, principal.ID, runID); handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	flusher, supported := writer.(http.Flusher)
+	if !supported {
+		handler.writeError(writer, request, http.StatusInternalServerError, "STREAMING_UNSUPPORTED", "response streaming is unavailable", nil)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("X-Accel-Buffering", "no")
+	fmt.Fprintf(writer, "event: ready\ndata: {\"run_id\":%q}\n\n", runID)
+	flusher.Flush()
+	messages, closeSubscription := handler.updates.SubscribeRunUpdates(request.Context(), runID)
+	defer closeSubscription()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case _, available := <-messages:
+			if !available {
+				return
+			}
+			fmt.Fprintf(writer, "event: update\ndata: {\"run_id\":%q}\n\n", runID)
+			flusher.Flush()
+		}
+	}
+}
+
+func (handler *Handler) cancelRun(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	run, applied, err := handler.application.CancelRun(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("run_id"), traceid.From(request.Context()))
+	if handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	status := http.StatusAccepted
+	if !applied {
+		status = http.StatusOK
+	}
+	writeJSON(writer, status, map[string]any{"run": newRunCommandResponse(run), "accepted": applied})
+}
+
+func (handler *Handler) nodeTypes(writer http.ResponseWriter, request *http.Request) {
+	if _, ok := handler.authenticate(writer, request); !ok {
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"node_types": handler.application.NodeTypes()})
+}
+
+func (handler *Handler) connections(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	connections, err := handler.application.Connections(request.Context(), request.PathValue("project_id"), principal.ID)
+	if handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"connections": connections})
 }
 
 func (handler *Handler) principalAndRevision(writer http.ResponseWriter, request *http.Request) (access.Principal, int64, bool) {
@@ -294,6 +467,18 @@ func (handler *Handler) writeResultError(writer http.ResponseWriter, request *ht
 		case definition.CodeCatalogUnavailable:
 			status = http.StatusUnprocessableEntity
 		}
+	}
+	if errors.Is(err, runtime.ErrRunNotFound) {
+		status, code, message = http.StatusNotFound, "RUN_NOT_FOUND", "workflow run was not found"
+	}
+	if errors.Is(err, runtime.ErrRunWorkflowNotPublished) {
+		status, code, message = http.StatusConflict, definition.CodeWorkflowNotPublished, "workflow has no active published version"
+	}
+	if errors.Is(err, access.ErrPermissionDenied) {
+		status, code, message = http.StatusForbidden, definition.CodePermissionDenied, "permission denied"
+	}
+	if errors.Is(err, runtime.ErrInvalidRun) {
+		status, code, message = http.StatusBadRequest, definition.CodeInvalidArgument, "run request is invalid"
 	}
 	handler.writeError(writer, request, status, code, message, details)
 	return true

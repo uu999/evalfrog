@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: EvalFrog External API
-  version: 1.0.0-m3
-  description: Human Web and Agent CLI share this Definition lifecycle API.
+  version: 1.0.0-m10
+  description: Human Web and Agent CLI share this complete authoring and runtime command API.
 servers:
   - url: /
 security:
@@ -104,24 +104,25 @@ paths:
                   valid: { type: boolean }
                   diagnostics: { type: array, items: { type: object } }
         default: { $ref: '#/components/responses/Error' }
-  /v1/projects/{project_id}/workflows/{workflow_id}/draft/test-snapshots:
+  /v1/projects/{project_id}/workflows/{workflow_id}/draft/test:
     post:
-      operationId: compileDraftTestSnapshot
-      description: Compiles and persists an immutable Snapshot; it does not create a Run in M3.
+      operationId: testDraft
+      description: Server validates and compiles the selected immutable Draft Revision, then creates a Test Run bound to the resulting Snapshot.
       parameters:
         - $ref: '#/components/parameters/ProjectID'
         - $ref: '#/components/parameters/WorkflowID'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/RevisionRequest' }
+            schema: { $ref: '#/components/schemas/TestDraftRequest' }
       responses:
         '201':
-          description: Immutable execution content compiled by the server.
+          description: Persisted Test Run. The immutable Snapshot remains server-owned.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ExecutionSnapshot' }
+              schema: { $ref: '#/components/schemas/RunRecord' }
         default: { $ref: '#/components/responses/Error' }
   /v1/projects/{project_id}/workflows/{workflow_id}/publish:
     post:
@@ -142,11 +143,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [version, execution_snapshot]
+                required: [version]
                 additionalProperties: false
                 properties:
                   version: { $ref: '#/components/schemas/PublishedVersion' }
-                  execution_snapshot: { $ref: '#/components/schemas/ExecutionSnapshot' }
         default: { $ref: '#/components/responses/Error' }
   /v1/projects/{project_id}/workflows/{workflow_id}/versions/{version_number}/activate:
     post:
@@ -165,6 +165,97 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublishedVersion' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/workflows/{workflow_id}/runs:
+    post:
+      operationId: createProductionRun
+      description: Creates a Run from the active immutable Published Version only.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkflowID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRunRequest' }
+      responses:
+        '201':
+          description: Persisted Production Run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunRecord' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/runs/{run_id}:
+    get:
+      operationId: getRun
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Current PostgreSQL-derived Run Read Model.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunView' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/runs/{run_id}/events:
+    get:
+      operationId: subscribeRunUpdates
+      description: Lossy Server-Sent Event wake-up stream. Consumers must re-read the Run view after every update or reconnect.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Run update wake-up events only; no Runtime state is carried in the stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/runs/{run_id}/cancel:
+    post:
+      operationId: cancelRun
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '202': { $ref: '#/components/responses/CancelAccepted' }
+        '200': { $ref: '#/components/responses/CancelAccepted' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/node-types:
+    get:
+      operationId: listNodeTypes
+      responses:
+        '200':
+          description: Public, versionless authoring descriptions from the current catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node_types]
+                properties:
+                  node_types:
+                    type: array
+                    items: { $ref: '#/components/schemas/NodeDescription' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/connections:
+    get:
+      operationId: listConnections
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Safe authoring metadata; endpoints and secret references are absent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConnectionSummary' }
+        default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     bearerAuth:
@@ -178,6 +269,11 @@ components:
       schema: { type: string, format: uuid }
     WorkflowID:
       name: workflow_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RunID:
+      name: run_id
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -210,6 +306,21 @@ components:
       additionalProperties: false
       properties:
         revision: { type: integer, format: int64, minimum: 1 }
+    TestDraftRequest:
+      type: object
+      required: [revision, input, deadline_at]
+      additionalProperties: false
+      properties:
+        revision: { type: integer, format: int64, minimum: 1 }
+        input: { type: object }
+        deadline_at: { type: string, format: date-time }
+    CreateRunRequest:
+      type: object
+      required: [input, deadline_at]
+      additionalProperties: false
+      properties:
+        input: { type: object }
+        deadline_at: { type: string, format: date-time }
     PublishRequest:
       type: object
       required: [expected_revision, change_log]
@@ -271,25 +382,72 @@ components:
         change_log: { type: string }
         created_by: { type: string, format: uuid }
         created_at: { type: string, format: date-time }
-    ExecutionSnapshot:
+    RunRecord:
       type: object
-      readOnly: true
-      required: [snapshot_id, project_id, workflow_id, origin_kind, origin_id, ir, dsl, source_map, compiler_manifest, ir_hash, dsl_hash, source_map_hash, definition_hash, created_at]
+      description: Minimal command response. Read current Runtime state through the Run View endpoint.
+      required: [run_id, purpose, state, created_at]
       properties:
-        snapshot_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        purpose: { type: string, enum: [test, production] }
+        created_at: { type: string, format: date-time }
+        state: { type: string, enum: [pending, running, succeeded, failed, canceled, timed_out] }
+    FailureLocation:
+      type: object
+      properties:
+        logical_node_id: { type: string }
+        logical_edge_id: { type: string }
+        ir_field: { type: string }
+        details: { type: object }
+    RunNodeView:
+      type: object
+      required: [execution_node_id, state, activated]
+      properties:
+        execution_node_id: { type: string }
+        state: { type: string }
+        activated: { type: boolean }
+        attempt_id: { type: string, format: uuid }
+        failure: { type: object }
+        location: { $ref: '#/components/schemas/FailureLocation' }
+    RunView:
+      type: object
+      required: [run_id, project_id, workflow_id, purpose, state, state_version, snapshot_id, deadline_at, created_at, updated_at, cancel_requested, nodes]
+      properties:
+        run_id: { type: string, format: uuid }
         project_id: { type: string, format: uuid }
         workflow_id: { type: string, format: uuid }
-        origin_kind: { type: string, enum: [draft_test, published] }
-        origin_id: { type: string, format: uuid }
-        ir: { type: object }
-        dsl: { type: object }
-        source_map: { type: object }
-        compiler_manifest: { type: object }
-        ir_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
-        dsl_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
-        source_map_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
-        definition_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        purpose: { type: string, enum: [test, production] }
+        state: { type: string }
+        state_version: { type: integer, minimum: 1 }
+        snapshot_id: { type: string, format: uuid }
+        deadline_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        cancel_requested: { type: boolean }
+        output: { type: object }
+        failure: { type: object }
+        failure_location: { $ref: '#/components/schemas/FailureLocation' }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/RunNodeView' }
+    ConnectionSummary:
+      type: object
+      required: [connection_id, reference, enabled, resource_revision]
+      properties:
+        connection_id: { type: string, format: uuid }
+        reference: { type: string }
+        enabled: { type: boolean }
+        resource_revision: { type: integer, minimum: 1 }
+    NodeDescription:
+      type: object
+      required: [type, kind, natural_language_description, allowed_inputs, outputs, examples]
+      properties:
+        type: { type: string }
+        kind: { type: string, enum: [control, task] }
+        natural_language_description: { type: string }
+        allowed_inputs: { type: array, items: { type: object } }
+        additional_inputs: { type: [object, 'null'] }
+        outputs: { type: object }
+        examples: { type: array, items: { type: object } }
     ErrorEnvelope:
       type: object
       required: [error]
@@ -316,6 +474,16 @@ components:
             properties:
               workflow: { $ref: '#/components/schemas/Workflow' }
               draft_revision: { $ref: '#/components/schemas/DraftRevision' }
+    CancelAccepted:
+      description: Cancellation accepted or already observed; Engine completes the state transition asynchronously.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [run, accepted]
+            properties:
+              run: { $ref: '#/components/schemas/RunRecord' }
+              accepted: { type: boolean }
     Error:
       description: Stable machine-readable error envelope.
       content:

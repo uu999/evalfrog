@@ -16,6 +16,7 @@ import (
 	"github.com/uu999/evalfrog/internal/adapters/postgres"
 	"github.com/uu999/evalfrog/internal/adapters/schedulingredis"
 	"github.com/uu999/evalfrog/internal/adapters/workerapi"
+	"github.com/uu999/evalfrog/internal/catalog"
 	"github.com/uu999/evalfrog/internal/definition"
 	"github.com/uu999/evalfrog/internal/eventing"
 	"github.com/uu999/evalfrog/internal/platform/bootstrap"
@@ -28,12 +29,15 @@ import (
 	"github.com/uu999/evalfrog/internal/platform/logging"
 	"github.com/uu999/evalfrog/internal/platform/metrics"
 	"github.com/uu999/evalfrog/internal/platform/migrations"
+	"github.com/uu999/evalfrog/internal/projection"
 	"github.com/uu999/evalfrog/internal/recovery"
 	"github.com/uu999/evalfrog/internal/resources"
+	"github.com/uu999/evalfrog/internal/runtime"
 	"github.com/uu999/evalfrog/internal/runtime/attempt"
 	runtimecontext "github.com/uu999/evalfrog/internal/runtime/context"
 	"github.com/uu999/evalfrog/internal/runtime/engine"
 	"github.com/uu999/evalfrog/internal/scheduling"
+	"github.com/uu999/evalfrog/internal/workflowapp"
 )
 
 const serviceName = "evalfrog-control-plane"
@@ -111,10 +115,21 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 		logger, readiness, metrics.New(serviceName),
 	)
 	store := postgres.NewStore(postgresClient.Pool())
+	store.SetRunViewInvalidator(cacheClient)
 	accessService := access.NewService(store)
 	resourceResolver := resources.NewResolver(store, accessService)
 	definitionService := definition.NewBuiltinService(store, accessService, resourceResolver)
-	server.Handle("/v1/", httpapi.New(accessService, definitionService))
+	runCreator := runtime.NewBuiltinRunCreator(store, accessService)
+	runControl := runtime.NewBuiltinRunControl(store, accessService)
+	runReader := projection.NewCachedService(projection.NewBuiltinService(store, accessService), cacheClient,
+		configuration.Cache.ActiveRunReadModelTTL.Duration(), configuration.Cache.TerminalRunReadModelTTL.Duration())
+	connectionDirectory := resources.NewBuiltinConnectionDirectory(store, accessService)
+	application, err := workflowapp.New(definitionService, runCreator, runControl, runReader, catalog.BuiltinV1(), connectionDirectory)
+	if err != nil {
+		logger.Error("workflow application construction failed", "error", err)
+		return 1
+	}
+	server.Handle("/v1/", httpapi.New(accessService, application, cacheClient))
 	attemptCoordinator := attempt.NewBuiltinCoordinator(store)
 	contextGateway, err := runtimecontext.NewGateway(store, cacheClient,
 		configuration.Cache.ExecutionSnapshotTTL.Duration(), configuration.Cache.ActiveRunContextTTL.Duration())

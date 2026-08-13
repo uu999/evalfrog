@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/uu999/evalfrog/internal/dsl"
 	"github.com/uu999/evalfrog/internal/eventing"
+	"github.com/uu999/evalfrog/internal/projection"
 	"github.com/uu999/evalfrog/internal/runtime"
 	"github.com/uu999/evalfrog/internal/runtime/engine"
 	"github.com/uu999/evalfrog/internal/scheduling"
+	"github.com/uu999/evalfrog/internal/sourcemap"
 )
 
 func (store *Store) CreatePendingRun(ctx context.Context, record runtime.CreatePendingRunRecord) (runtime.WorkflowRunRecord, error) {
@@ -64,15 +66,22 @@ func (store *Store) CreatePendingRun(ctx context.Context, record runtime.CreateP
 			record.SnapshotID, record.DraftRevisionNumber).Scan(&snapshotID, &definitionHash)
 		definitionSource = string(runtime.DefinitionDraftSnapshot)
 	} else {
+		var nullableSnapshot, nullableHash, nullableVersion *string
 		err = tx.QueryRow(ctx, `
 			SELECT s.snapshot_id::text, s.definition_hash, v.version_id::text
 			FROM workflows w
-			JOIN workflow_versions v
+			LEFT JOIN workflow_versions v
 			  ON v.project_id=w.project_id AND v.workflow_id=w.workflow_id AND v.version_id=w.active_version_id
-			JOIN workflow_execution_snapshots s
+			LEFT JOIN workflow_execution_snapshots s
 			  ON s.project_id=v.project_id AND s.workflow_id=v.workflow_id AND s.snapshot_id=v.execution_snapshot_id
 			WHERE w.project_id=$1 AND w.workflow_id=$2
-			FOR SHARE OF w`, record.ProjectID, record.WorkflowID).Scan(&snapshotID, &definitionHash, &versionID)
+			FOR SHARE OF w`, record.ProjectID, record.WorkflowID).Scan(&nullableSnapshot, &nullableHash, &nullableVersion)
+		if err == nil {
+			if nullableSnapshot == nil || nullableHash == nil || nullableVersion == nil {
+				return runtime.WorkflowRunRecord{}, runtime.ErrRunWorkflowNotPublished
+			}
+			snapshotID, definitionHash, versionID = *nullableSnapshot, *nullableHash, *nullableVersion
+		}
 		definitionSource = string(runtime.DefinitionPublishedVersion)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -122,12 +131,149 @@ func (store *Store) CreatePendingRun(ctx context.Context, record runtime.CreateP
 	if err != nil {
 		return runtime.WorkflowRunRecord{}, err
 	}
-	result, err := loadRun(ctx, tx, record.ProjectID, record.RunID, false)
-	if err != nil {
-		return runtime.WorkflowRunRecord{}, err
+	result := runtime.WorkflowRunRecord{
+		ID: record.RunID, ProjectID: record.ProjectID, WorkflowID: record.WorkflowID,
+		Purpose: record.Purpose,
+		Definition: runtime.DefinitionReference{
+			SnapshotID: snapshotID, DefinitionHash: definitionHash,
+			Source: runtime.DefinitionSource(definitionSource), PublishedVersionID: versionID,
+		},
+		WorkflowInput: append([]byte(nil), record.WorkflowInput...),
+		DeadlineAt:    record.DeadlineAt, CreatedAt: record.CreatedAt,
+		State: runtime.RunPending, StateVersion: 1,
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return runtime.WorkflowRunRecord{}, err
+	}
+	store.invalidateRunView(ctx, record.RunID)
+	return result, nil
+}
+
+// RequestCancellation persists only the cancellation intent signal. The
+// Engine remains the owner of Run/Node state transition and consumes this
+// durable Outbox event with the same Inbox/CAS rules as every other event.
+func (store *Store) RequestCancellation(ctx context.Context, record runtime.CancelRunRecord) (runtime.WorkflowRunRecord, bool, error) {
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	run, err := loadRun(ctx, tx, record.ProjectID, record.RunID, true)
+	if err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	if run.State.Terminal() || !run.CancelRequestedAt.IsZero() {
+		if err = tx.Commit(ctx); err != nil {
+			return runtime.WorkflowRunRecord{}, false, err
+		}
+		return run, false, nil
+	}
+	requestedAt := record.RequestedAt.UTC().Truncate(time.Microsecond)
+	if requestedAt.IsZero() || requestedAt.Before(run.CreatedAt) {
+		return runtime.WorkflowRunRecord{}, false, runtime.ErrInvalidRun
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE workflow_runs SET cancel_requested_at=$1, updated_at=$1
+		WHERE project_id=$2 AND run_id=$3 AND cancel_requested_at IS NULL
+		  AND state NOT IN ('succeeded','failed','canceled','timed_out')`,
+		requestedAt, record.ProjectID, record.RunID)
+	if err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	if tag.RowsAffected() != 1 {
+		result, loadErr := loadRun(ctx, tx, record.ProjectID, record.RunID, false)
+		if loadErr != nil {
+			return runtime.WorkflowRunRecord{}, false, loadErr
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return runtime.WorkflowRunRecord{}, false, commitErr
+		}
+		return result, false, nil
+	}
+	event := eventing.RuntimeEvent{
+		MessageVersion: eventing.RuntimeMessageVersion, EventID: record.EventID,
+		ProjectID: record.ProjectID, RunID: record.RunID, AggregateType: eventing.WorkflowRunAggregate,
+		AggregateID: record.RunID, EventType: eventing.RunCancelRequested,
+		OccurredAt: requestedAt, TraceID: record.TraceID,
+	}
+	if err = insertOutbox(ctx, tx, event); err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	result, err := loadRun(ctx, tx, record.ProjectID, record.RunID, false)
+	if err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	store.invalidateRunView(ctx, record.RunID)
+	return result, true, nil
+}
+
+func (store *Store) GetRunView(ctx context.Context, projectID, runID string) (projection.RunView, error) {
+	var result projection.RunView
+	var output, termination, sourceMapRaw []byte
+	var cancelRequested *time.Time
+	err := store.pool.QueryRow(ctx, `
+		SELECT r.run_id::text, r.project_id::text, r.workflow_id::text, r.purpose,
+		       r.state, r.state_version, r.snapshot_id::text, r.deadline_at, r.created_at,
+		       r.updated_at, r.workflow_output_json, r.termination_intent_json,
+		       r.cancel_requested_at, s.source_map_json
+		FROM workflow_runs r
+		JOIN workflow_execution_snapshots s ON s.project_id=r.project_id AND s.workflow_id=r.workflow_id AND s.snapshot_id=r.snapshot_id
+		WHERE r.project_id=$1 AND r.run_id=$2`, projectID, runID).Scan(
+		&result.RunID, &result.ProjectID, &result.WorkflowID, &result.Purpose,
+		&result.State, &result.StateVersion, &result.SnapshotID, &result.DeadlineAt, &result.CreatedAt,
+		&result.UpdatedAt, &output, &termination, &cancelRequested, &sourceMapRaw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return projection.RunView{}, runtime.ErrRunNotFound
+	}
+	if err != nil {
+		return projection.RunView{}, err
+	}
+	result.Output = append(json.RawMessage(nil), output...)
+	result.CancelRequested = cancelRequested != nil
+	var sourceMap sourcemap.Document
+	if err = json.Unmarshal(sourceMapRaw, &sourceMap); err != nil {
+		return projection.RunView{}, fmt.Errorf("decode immutable source map: %w", err)
+	}
+	if len(termination) != 0 {
+		var intent runtime.TerminationIntent
+		if err = json.Unmarshal(termination, &intent); err != nil {
+			return projection.RunView{}, err
+		}
+		result.Failure = &intent.Cause
+		result.FailureLocation = projection.LocateFailure(sourceMap, result.Failure)
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT execution_node_id, state, activated, current_attempt_id::text, failure_json
+		FROM node_runs WHERE project_id=$1 AND run_id=$2 ORDER BY execution_node_id`, projectID, runID)
+	if err != nil {
+		return projection.RunView{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var node projection.NodeView
+		var attemptID *string
+		var failure []byte
+		if err = rows.Scan(&node.ExecutionNodeID, &node.State, &node.Activated, &attemptID, &failure); err != nil {
+			return projection.RunView{}, err
+		}
+		if attemptID != nil {
+			node.AttemptID = *attemptID
+		}
+		if len(failure) != 0 {
+			var decoded runtime.Failure
+			if err = json.Unmarshal(failure, &decoded); err != nil {
+				return projection.RunView{}, err
+			}
+			node.Failure = &decoded
+			node.Location = projection.LocateFailure(sourceMap, node.Failure)
+		}
+		result.Nodes = append(result.Nodes, node)
+	}
+	if err = rows.Err(); err != nil {
+		return projection.RunView{}, err
 	}
 	return result, nil
 }
@@ -140,9 +286,11 @@ func commandName(purpose runtime.RunPurpose) string {
 }
 
 type runtimeTransaction struct {
-	tx       pgx.Tx
-	router   scheduling.Router
-	snapshot *engine.Snapshot
+	tx         pgx.Tx
+	router     scheduling.Router
+	snapshot   *engine.Snapshot
+	store      *Store
+	dirtyRunID string
 }
 
 func (store *Store) WithRunTransaction(ctx context.Context, event eventing.RuntimeEvent, operation func(engine.RunTransaction) error) error {
@@ -151,11 +299,15 @@ func (store *Store) WithRunTransaction(ctx context.Context, event eventing.Runti
 		return err
 	}
 	defer tx.Rollback(ctx)
-	adapter := &runtimeTransaction{tx: tx, router: store.router}
+	adapter := &runtimeTransaction{tx: tx, router: store.router, store: store}
 	if err = operation(adapter); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	store.invalidateRunView(ctx, adapter.dirtyRunID)
+	return nil
 }
 
 func (transaction *runtimeTransaction) AcceptInbox(ctx context.Context, consumer string, event eventing.RuntimeEvent) (bool, error) {
@@ -339,14 +491,23 @@ func (transaction *runtimeTransaction) InitializeRun(ctx context.Context, before
 			return err
 		}
 	}
-	return transaction.updateRunCAS(ctx, before, after.Run, at)
+	if err := transaction.updateRunCAS(ctx, before, after.Run, at); err != nil {
+		return err
+	}
+	transaction.dirtyRunID = after.Run.ID
+	return nil
 }
 
 func (transaction *runtimeTransaction) FailRunInitialization(ctx context.Context, before, after runtime.WorkflowRunRecord, at time.Time) error {
-	return transaction.updateRunCAS(ctx, before, after, at)
+	if err := transaction.updateRunCAS(ctx, before, after, at); err != nil {
+		return err
+	}
+	transaction.dirtyRunID = after.ID
+	return nil
 }
 
 func (transaction *runtimeTransaction) AdvanceRun(ctx context.Context, before, after engine.State, at time.Time) error {
+	nodesChanged := false
 	beforeNodes := make(map[string]runtime.NodeRunRecord, len(before.Nodes))
 	for _, node := range before.Nodes {
 		beforeNodes[node.ExecutionNodeID] = node
@@ -382,9 +543,18 @@ func (transaction *runtimeTransaction) AdvanceRun(ctx context.Context, before, a
 		if tag.RowsAffected() != 1 {
 			return runtime.ErrRunConflict
 		}
+		nodesChanged = true
 	}
 	if after.Run.StateVersion != before.Run.StateVersion {
-		return transaction.updateRunCAS(ctx, before.Run, after.Run, at)
+		if err := transaction.updateRunCAS(ctx, before.Run, after.Run, at); err != nil {
+			return err
+		}
+	}
+	// A projection contains both Run and Node state. Node-only transitions are
+	// therefore observable changes too, even when the aggregate Run version is
+	// unchanged (for example a dispatched task becoming running).
+	if nodesChanged || after.Run.StateVersion != before.Run.StateVersion {
+		transaction.dirtyRunID = after.Run.ID
 	}
 	return nil
 }
@@ -418,20 +588,21 @@ func loadRun(ctx context.Context, queryer interface {
 		       snapshot_id::text, definition_hash, definition_source,
 		       published_version_id::text, input_json, workflow_output_json,
 		       deadline_at, created_at, state, state_version,
-		       execution_node_ids, termination_intent_json
+		       execution_node_ids, termination_intent_json, cancel_requested_at
 		FROM workflow_runs WHERE project_id=$1 AND run_id=$2`
 	if forUpdate {
 		query += ` FOR UPDATE`
 	}
 	var result runtime.WorkflowRunRecord
 	var versionID *string
+	var cancelRequestedAt *time.Time
 	var source runtime.DefinitionSource
 	var output, nodeIDs, termination []byte
 	err := queryer.QueryRow(ctx, query, projectID, runID).Scan(
 		&result.ID, &result.ProjectID, &result.WorkflowID, &result.Purpose,
 		&result.Definition.SnapshotID, &result.Definition.DefinitionHash, &source,
 		&versionID, &result.WorkflowInput, &output, &result.DeadlineAt, &result.CreatedAt,
-		&result.State, &result.StateVersion, &nodeIDs, &termination)
+		&result.State, &result.StateVersion, &nodeIDs, &termination, &cancelRequestedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return runtime.WorkflowRunRecord{}, runtime.ErrRunNotFound
 	}
@@ -439,6 +610,9 @@ func loadRun(ctx context.Context, queryer interface {
 		return runtime.WorkflowRunRecord{}, err
 	}
 	result.Definition.Source = source
+	if cancelRequestedAt != nil {
+		result.CancelRequestedAt = *cancelRequestedAt
+	}
 	if versionID != nil {
 		result.Definition.PublishedVersionID = *versionID
 	}

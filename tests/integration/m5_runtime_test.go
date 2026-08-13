@@ -112,7 +112,7 @@ func TestM5CreateRunBindsValidatedImmutableSourceAndOnlyWritesPendingIdentity(t 
 		ProjectID: harness.projectID, PrincipalID: harness.principalID, WorkflowID: workflow.ID,
 		WorkflowInput: json.RawMessage(`{}`), DeadlineAt: time.Now().UTC().Add(time.Hour),
 		IdempotencyKey: "m5-unpublished-production", TraceID: "trace-unpublished",
-	}); !errors.Is(err, runtimepkg.ErrRunSourceInvalid) {
+	}); !errors.Is(err, runtimepkg.ErrRunWorkflowNotPublished) {
 		t.Fatalf("unpublished production source error=%v", err)
 	}
 	run := harness.createTestRun(t, workflow.ID, snapshot.ID, "m5-test-create-01")

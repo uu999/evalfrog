@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M0-M9 已完成：Kafka 分布式执行、受管 HTTP/RPC Runtime 与 Python Per-Attempt Sandbox 已接入；下一阶段为 M10 External API、CLI 与 Human Web 核心闭环**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M0-M10 已完成：Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel 与 Source Map 错误回映**。这代表 Product Core Loop Ready，不代表 M11/M12 的故障、容量和发布门槛已经完成。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -387,7 +387,15 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0-M9 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor，以及 Python Per-Attempt Sandbox。完整 External Run API、CLI 与 Web 闭环仍属于后续阶段；README 不把计划能力描述成当前成果。
+M0-M10 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor、Python Per-Attempt Sandbox，以及完整 External Run API、Agent CLI 与 Human Web 闭环。当前可称为 Product Core Loop Ready；M11/M12 的故障、容量与发布门槛仍未完成。
+
+### M10 Product Core Loop
+
+- 所有 Authoring 请求只传 Canonical JSON IR；DSL、Source Map 与 Execution Snapshot 由服务器内部生成，不提供上传或客户端依赖入口；
+- CLI 支持 `workflow create|pull|copy`、`draft push|validate`、`publish`、`run test|create|status|cancel`、`node-type list` 与 `connection list`；
+- `web/` 提供独立静态 Canvas：加载 Draft、编辑 IR Node/Edge/Input、拖拽布局、保存/校验/测试/发布/正式运行/取消；
+- Run 状态由 PostgreSQL 投影，Cache Redis 只做 Cache-Aside；SSE/PubSub 只传“重新读取”通知，断线或丢消息后重新 GET Run 即恢复；
+- Runtime Failure 通过不可变 Snapshot 的 Source Map 回到 IR Node、Edge 和字段路径。
 ## M8-M9 Runtime Status
 
 M8 is implemented: Builtin Worker executes managed HTTP/RPC nodes with Connection-relative paths, Service Catalog operation binding, runtime identity checks, Secret Resolver Port, stable idempotency keys, and Attempt Resource Revision audit.
