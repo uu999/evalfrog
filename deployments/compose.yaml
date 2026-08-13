@@ -137,6 +137,16 @@ services:
       retries: 30
     init: true
 
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:8080"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
   worker-builtin:
     build:
       <<: *app-build

@@ -61,6 +61,47 @@ func (client *Client) PutEffectiveOutput(ctx context.Context, runID, nodeID stri
 	pipe.Expire(ctx, key, ttl)
 	_, _ = pipe.Exec(ctx)
 }
+func (client *Client) GetRunView(ctx context.Context, runID string) (json.RawMessage, bool) {
+	return client.get(ctx, client.prefix+"projection:run:"+runID)
+}
+func (client *Client) PutRunView(ctx context.Context, runID string, value json.RawMessage, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	client.put(ctx, client.prefix+"projection:run:"+runID, value, ttl)
+}
+func (client *Client) DeleteRunView(ctx context.Context, runID string) {
+	_ = client.client.Del(ctx, client.prefix+"projection:run:"+runID).Err()
+}
+func (client *Client) PublishRunUpdate(ctx context.Context, runID string) {
+	_ = client.client.Publish(ctx, client.prefix+"projection:run-updates:"+runID, runID).Err()
+}
+
+func (client *Client) SubscribeRunUpdates(ctx context.Context, runID string) (<-chan string, func()) {
+	pubsub := client.client.Subscribe(ctx, client.prefix+"projection:run-updates:"+runID)
+	channel := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(channel)
+		defer pubsub.Close()
+		for {
+			message, err := pubsub.ReceiveMessage(ctx)
+			if err != nil {
+				return
+			}
+			select {
+			case channel <- message.Payload:
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			default:
+				// Coalesce duplicated wake-ups; the client reloads authority.
+			}
+		}
+	}()
+	return channel, func() { close(done) }
+}
 func (client *Client) get(ctx context.Context, key string) (json.RawMessage, bool) {
 	value, err := client.client.Get(ctx, key).Bytes()
 	return validJSON(value, err)

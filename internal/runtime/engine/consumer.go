@@ -111,6 +111,31 @@ func (consumer Consumer) advance(ctx context.Context, tx RunTransaction, event e
 	if before.Run.State.Terminal() {
 		return nil
 	}
+	// A Run can be cancelled after its durable creation transaction but before
+	// RunCreated initializes the graph. There are intentionally no Node Runs in
+	// that interval, so do not try to restore a complete Engine graph.
+	if before.Run.State == runtime.RunPending {
+		if event.EventType != eventing.RunCancelRequested {
+			return nil
+		}
+		run, restoreErr := runtime.RestoreWorkflowRun(before.Run)
+		if restoreErr != nil {
+			return restoreErr
+		}
+		applied, cancelErr := run.RequestTermination(runtime.TerminationIntent{
+			Kind: runtime.TerminationCanceled, RequestedAt: event.OccurredAt,
+			Cause: runtime.Failure{Code: FailureRunCanceled, Phase: "run_control", RunID: run.ID(), SnapshotID: run.Definition().SnapshotID, DefinitionHash: run.Definition().DefinitionHash, Message: "run cancellation requested"},
+		})
+		if cancelErr != nil || !applied {
+			return cancelErr
+		}
+		if completeErr := run.CompleteTermination(nil); completeErr != nil {
+			return completeErr
+		}
+		after := before
+		after.Run = run.Snapshot()
+		return tx.AdvanceRun(ctx, before, after, event.OccurredAt)
+	}
 	snapshot, err := tx.LoadSnapshot(ctx, event.ProjectID, before.Run.Definition.SnapshotID)
 	if err != nil {
 		return err

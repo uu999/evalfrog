@@ -29,10 +29,10 @@ const (
 )
 
 type DefinitionReference struct {
-	SnapshotID         string
-	DefinitionHash     string
-	Source             DefinitionSource
-	PublishedVersionID string
+	SnapshotID         string           `json:"snapshot_id"`
+	DefinitionHash     string           `json:"definition_hash"`
+	Source             DefinitionSource `json:"source"`
+	PublishedVersionID string           `json:"published_version_id,omitempty"`
 }
 
 type CreateRunCommand struct {
@@ -81,19 +81,20 @@ type TerminationIntent struct {
 }
 
 type Failure struct {
-	Code            string `json:"code"`
-	Phase           string `json:"phase"`
-	Retryable       bool   `json:"retryable"`
-	RunID           string `json:"run_id"`
-	SnapshotID      string `json:"snapshot_id"`
-	DefinitionHash  string `json:"definition_hash"`
-	ExecutionNodeID string `json:"execution_node_id,omitempty"`
-	DSLField        string `json:"dsl_field,omitempty"`
-	ExecutionEdgeID string `json:"execution_edge_id,omitempty"`
-	AttemptID       string `json:"attempt_id,omitempty"`
-	Expected        string `json:"expected,omitempty"`
-	Actual          string `json:"actual,omitempty"`
-	Message         string `json:"message"`
+	Code            string         `json:"code"`
+	Phase           string         `json:"phase"`
+	Retryable       bool           `json:"retryable"`
+	RunID           string         `json:"run_id"`
+	SnapshotID      string         `json:"snapshot_id"`
+	DefinitionHash  string         `json:"definition_hash"`
+	ExecutionNodeID string         `json:"execution_node_id,omitempty"`
+	DSLField        string         `json:"dsl_field,omitempty"`
+	ExecutionEdgeID string         `json:"execution_edge_id,omitempty"`
+	AttemptID       string         `json:"attempt_id,omitempty"`
+	Expected        string         `json:"expected,omitempty"`
+	Actual          string         `json:"actual,omitempty"`
+	Message         string         `json:"message"`
+	Details         map[string]any `json:"details,omitempty"`
 }
 
 type WorkflowRun struct {

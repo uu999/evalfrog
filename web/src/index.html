@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EvalFrog Workflow Canvas</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header><strong>EvalFrog</strong><span>Human Web Canvas</span><button id="load">加载 Draft</button><button id="save">保存 Draft</button><button id="validate">校验</button><button id="test">测试</button><button id="publish">发布</button><button id="run">正式运行</button><button id="cancel">取消运行</button></header>
+    <main>
+      <aside><h2>节点目录</h2><div id="catalog"></div><h2>运行</h2><div id="run-state">未选择</div><pre id="run-error"></pre></aside>
+      <section id="canvas" aria-label="Workflow canvas"><svg id="edges" aria-hidden="true"></svg><div id="nodes"></div></section>
+      <aside><h2>编辑</h2><label>Workflow ID<input id="workflow-id" /></label><label>Project ID<input id="project-id" /></label><label>Token<input id="token" type="password" /></label><label>API Base URL<input id="api-base" value="/api" /></label><label>IR JSON<textarea id="ir"></textarea></label><pre id="diagnostics"></pre></aside>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

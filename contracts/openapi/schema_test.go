@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestM3ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
+func TestM10ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 	raw, err := os.ReadFile("v1.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -18,7 +18,7 @@ func TestM3ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths, ok := document["paths"].(map[string]any)
-	if !ok || len(paths) != 8 {
+	if !ok || len(paths) != 14 {
 		t.Fatalf("unexpected path contract: %#v", document["paths"])
 	}
 	for path := range paths {
@@ -31,6 +31,13 @@ func TestM3ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 		"/v1/projects/{project_id}/workflows",
 		"/v1/projects/{project_id}/workflows/{workflow_id}/draft",
 		"/v1/projects/{project_id}/workflows/{workflow_id}/publish",
+		"/v1/projects/{project_id}/workflows/{workflow_id}/draft/test",
+		"/v1/projects/{project_id}/workflows/{workflow_id}/runs",
+		"/v1/projects/{project_id}/runs/{run_id}",
+		"/v1/projects/{project_id}/runs/{run_id}/events",
+		"/v1/projects/{project_id}/runs/{run_id}/cancel",
+		"/v1/node-types",
+		"/v1/projects/{project_id}/connections",
 	} {
 		if _, exists := paths[required]; !exists {
 			t.Fatalf("required path %s is missing", required)

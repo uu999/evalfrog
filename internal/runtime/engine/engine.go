@@ -280,6 +280,7 @@ func (engine *Engine) HandleAttemptCompleted(attemptID string, at time.Time) err
 			return nil
 		}
 		failure := engine.failure(result.ErrorCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, result.DSLField, false)
+		failure.Details = cloneDetails(result.ErrorDetails)
 		if err := node.FailAttempt(attemptID, runtime.NodeFailed, failure); err != nil {
 			return err
 		}
@@ -296,6 +297,7 @@ func (engine *Engine) HandleAttemptCompleted(attemptID string, at time.Time) err
 			failureCode = FailureNodeTimeout
 		}
 		failure := engine.failure(failureCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, result.DSLField, false)
+		failure.Details = cloneDetails(result.ErrorDetails)
 		target := runtime.NodeFailed
 		if result.State == runtime.AttemptTimedOut {
 			target = runtime.NodeTimedOut
@@ -306,6 +308,7 @@ func (engine *Engine) HandleAttemptCompleted(attemptID string, at time.Time) err
 		_, _ = engine.run.RequestTermination(runtime.TerminationIntent{Kind: runtime.TerminationFailed, RequestedAt: at, Cause: failure})
 	case runtime.AttemptCanceled:
 		failure := engine.failure(result.ErrorCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, result.DSLField, false)
+		failure.Details = cloneDetails(result.ErrorDetails)
 		if err := node.Cancel(FailureNodeFailed); err != nil {
 			return err
 		}
@@ -628,6 +631,17 @@ func cancelReason(kind runtime.TerminationKind) string {
 	default:
 		return FailureNodeFailed
 	}
+}
+
+func cloneDetails(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]any, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
 }
 
 func atOrCreated(at time.Time, run *runtime.WorkflowRun) time.Time {

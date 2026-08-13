@@ -9,6 +9,25 @@ import (
 	"github.com/uu999/evalfrog/internal/resources"
 )
 
+func (store *Store) ListConnections(ctx context.Context, projectID string) ([]resources.ConnectionSummary, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT connection_id::text, reference, enabled, resource_revision
+		FROM connections WHERE project_id=$1 ORDER BY reference`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]resources.ConnectionSummary, 0)
+	for rows.Next() {
+		var item resources.ConnectionSummary
+		if err = rows.Scan(&item.ID, &item.Reference, &item.Enabled, &item.Revision); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 type RuntimeResourceResolver struct {
 	store   *Store
 	secrets resources.SecretResolver

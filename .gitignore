@@ -5,6 +5,7 @@
 /control-plane
 /worker-builtin
 /worker-sandbox
+/web/dist/
 *.out
 .env
 .idea/

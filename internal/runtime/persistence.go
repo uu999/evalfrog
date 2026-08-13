@@ -15,10 +15,11 @@ import (
 )
 
 var (
-	ErrRunNotFound         = errors.New("workflow run not found")
-	ErrRunConflict         = errors.New("workflow run state conflict")
-	ErrRunSourceInvalid    = errors.New("workflow run definition source is invalid")
-	ErrRunIdempotencyReuse = errors.New("workflow run idempotency key reused")
+	ErrRunNotFound             = errors.New("workflow run not found")
+	ErrRunConflict             = errors.New("workflow run state conflict")
+	ErrRunSourceInvalid        = errors.New("workflow run definition source is invalid")
+	ErrRunWorkflowNotPublished = errors.New("workflow has no active published version")
+	ErrRunIdempotencyReuse     = errors.New("workflow run idempotency key reused")
 )
 
 type CreatePendingRunRecord struct {

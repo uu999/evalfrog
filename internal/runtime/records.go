@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"time"
 )
@@ -11,19 +12,20 @@ import (
 // It is data, not a mutation API: callers must Restore the aggregate and use
 // explicit domain operations before writing a new record.
 type WorkflowRunRecord struct {
-	ID               string
-	ProjectID        string
-	WorkflowID       string
-	Purpose          RunPurpose
-	Definition       DefinitionReference
-	WorkflowInput    json.RawMessage
-	WorkflowOutput   json.RawMessage
-	DeadlineAt       time.Time
-	CreatedAt        time.Time
-	State            RunState
-	StateVersion     uint64
-	ExecutionNodeIDs []string
-	Termination      *TerminationIntent
+	ID                string              `json:"run_id"`
+	ProjectID         string              `json:"project_id"`
+	WorkflowID        string              `json:"workflow_id"`
+	Purpose           RunPurpose          `json:"purpose"`
+	Definition        DefinitionReference `json:"definition"`
+	WorkflowInput     json.RawMessage     `json:"workflow_input"`
+	WorkflowOutput    json.RawMessage     `json:"workflow_output,omitempty"`
+	DeadlineAt        time.Time           `json:"deadline_at"`
+	CreatedAt         time.Time           `json:"created_at"`
+	State             RunState            `json:"state"`
+	StateVersion      uint64              `json:"state_version"`
+	ExecutionNodeIDs  []string            `json:"execution_node_ids,omitempty"`
+	Termination       *TerminationIntent  `json:"termination,omitempty"`
+	CancelRequestedAt time.Time           `json:"cancel_requested_at,omitempty"`
 }
 
 type NodeRunRecord struct {
@@ -233,6 +235,9 @@ func cloneTermination(value *TerminationIntent) *TerminationIntent {
 		return nil
 	}
 	copy := *value
+	if cause := cloneFailure(&value.Cause); cause != nil {
+		copy.Cause = *cause
+	}
 	return &copy
 }
 
@@ -241,5 +246,8 @@ func cloneFailure(value *Failure) *Failure {
 		return nil
 	}
 	copy := *value
+	if value.Details != nil {
+		copy.Details = maps.Clone(value.Details)
+	}
 	return &copy
 }
