@@ -63,18 +63,32 @@ type Cache interface {
 	PutEffectiveOutput(stdcontext.Context, string, string, json.RawMessage, time.Duration)
 }
 
+// CacheMetrics is deliberately a small outbound port. It records only
+// bounded cache-part names and hit/miss outcomes, never run or tenant IDs.
+type CacheMetrics interface {
+	ObserveExecutionContextCache(kind, outcome string)
+}
+
 type Gateway struct {
 	repository  Repository
 	cache       Cache
 	snapshotTTL time.Duration
 	runTTL      time.Duration
+	metrics     CacheMetrics
 }
 
-func NewGateway(repository Repository, cache Cache, snapshotTTL, runTTL time.Duration) (*Gateway, error) {
+func NewGateway(repository Repository, cache Cache, snapshotTTL, runTTL time.Duration, cacheMetrics ...CacheMetrics) (*Gateway, error) {
 	if repository == nil || cache == nil || snapshotTTL <= 0 || runTTL <= 0 {
 		return nil, fmt.Errorf("execution context repository, cache and TTLs are required")
 	}
-	return &Gateway{repository: repository, cache: cache, snapshotTTL: snapshotTTL, runTTL: runTTL}, nil
+	if len(cacheMetrics) > 1 {
+		return nil, fmt.Errorf("at most one execution context cache metrics observer is allowed")
+	}
+	var metric CacheMetrics
+	if len(cacheMetrics) == 1 {
+		metric = cacheMetrics[0]
+	}
+	return &Gateway{repository: repository, cache: cache, snapshotTTL: snapshotTTL, runTTL: runTTL, metrics: metric}, nil
 }
 
 func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (ExecutionContext, error) {
@@ -88,6 +102,7 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 	snapshotJSON, ok := gateway.cache.GetSnapshot(ctx, metadata.SnapshotID)
 	node, cacheErr := executionNode(snapshotJSON, metadata)
 	if !ok || cacheErr != nil {
+		gateway.observeCache("snapshot", "miss")
 		snapshotJSON, err = gateway.repository.LoadSnapshotDSL(ctx, metadata.ProjectID, metadata.SnapshotID)
 		if err != nil {
 			return ExecutionContext{}, err
@@ -97,9 +112,12 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 			return ExecutionContext{}, err
 		}
 		gateway.cache.PutSnapshot(ctx, metadata.SnapshotID, snapshotJSON, gateway.snapshotTTL)
+	} else {
+		gateway.observeCache("snapshot", "hit")
 	}
 	workflowInput, ok := gateway.cache.GetRunInput(ctx, metadata.RunID)
 	if !ok || !json.Valid(workflowInput) {
+		gateway.observeCache("run_input", "miss")
 		workflowInput, err = gateway.repository.LoadRunInput(ctx, metadata.ProjectID, metadata.RunID)
 		if err != nil {
 			return ExecutionContext{}, err
@@ -108,6 +126,8 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 			return ExecutionContext{}, fmt.Errorf("authoritative workflow input is not valid JSON")
 		}
 		gateway.cache.PutRunInput(ctx, metadata.RunID, workflowInput, gateway.runTTL)
+	} else {
+		gateway.observeCache("run_input", "hit")
 	}
 	upstream := make(map[string]json.RawMessage)
 	for _, binding := range node.Inputs {
@@ -120,6 +140,7 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 		}
 		value, hit := gateway.cache.GetEffectiveOutput(ctx, metadata.RunID, upstreamID)
 		if !hit || !json.Valid(value) {
+			gateway.observeCache("effective_output", "miss")
 			value, err = gateway.repository.LoadEffectiveOutput(ctx, metadata.ProjectID, metadata.RunID, upstreamID)
 			if err != nil {
 				return ExecutionContext{}, err
@@ -128,6 +149,8 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 				return ExecutionContext{}, fmt.Errorf("authoritative output for node %q is not valid JSON", upstreamID)
 			}
 			gateway.cache.PutEffectiveOutput(ctx, metadata.RunID, upstreamID, value, gateway.runTTL)
+		} else {
+			gateway.observeCache("effective_output", "hit")
 		}
 		upstream[upstreamID] = cloneRaw(value)
 	}
@@ -141,6 +164,12 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 		WorkflowInput: cloneRaw(workflowInput), Inputs: cloneMap(metadata.ResolvedInputs),
 		UpstreamOutputs: upstream, ResourceMaterial: map[string]json.RawMessage{},
 	}, nil
+}
+
+func (gateway *Gateway) observeCache(kind, outcome string) {
+	if gateway.metrics != nil {
+		gateway.metrics.ObserveExecutionContextCache(kind, outcome)
+	}
 }
 
 func executionNode(snapshotJSON json.RawMessage, metadata Metadata) (*dsl.Node, error) {

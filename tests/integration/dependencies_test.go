@@ -21,7 +21,11 @@ import (
 )
 
 func TestLocalDependenciesAndMigrationRunner(t *testing.T) {
-	t.Setenv("EVALFROG_POSTGRES_DSN", "postgres://evalfrog:evalfrog@localhost:15432/evalfrog?sslmode=disable")
+	dsn := os.Getenv("EVALFROG_INTEGRATION_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = "postgres://evalfrog:evalfrog@localhost:15432/evalfrog?sslmode=disable"
+	}
+	t.Setenv("EVALFROG_POSTGRES_DSN", dsn)
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

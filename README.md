@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M0-M11 已完成：Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel、Source Map 错误回映，以及可恢复的 Runtime 观测与故障恢复闭环**。这代表 Product Core Loop Ready，不代表 M12 的容量、安全和发布门槛已经完成。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M0-M11 已完成；M12 Release Candidate 验收进行中**。Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel、Source Map 错误回映，以及可恢复的 Runtime 观测与故障恢复闭环。M12 已加入连接池/缓存容量指标、可达依赖扫描、Sandbox Runtime Controller 与零信任部署断言；但目标环境容量报告、最终镜像扫描、`runsc` Escape/压力和恢复演练尚未完成，因此当前只能称为 Product Core Loop Ready / Release Candidate，不能称为 Production Ready。验收方法见 [发布与容量验收手册](./docs/operations/发布与容量验收手册.md)。
 
 ## 为什么是 EvalFrog
 

@@ -1,4 +1,7 @@
-FROM golang:1.26-alpine AS build
+# Pin the build image to the Go release containing the reachable TLS security
+# fix. A digest prevents a later mutable tag update from silently changing the
+# release candidate build.
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 
 ARG VERSION=dev
 ARG COMMIT=none
@@ -38,3 +41,14 @@ ENTRYPOINT ["/usr/local/bin/evalfrog"]
 FROM runtime-base AS worker-sandbox
 COPY --from=build /out/worker-sandbox /usr/local/bin/evalfrog
 ENTRYPOINT ["/usr/local/bin/evalfrog"]
+
+# The local Sandbox Runtime Controller is deliberately a different image from
+# worker-sandbox. It owns Docker only on a dedicated local sandbox node; the
+# sandbox Worker has no Docker CLI or socket. Production substitutes its
+# hardened runtime/controller implementation behind the same private protocol.
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS sandbox-runtime
+RUN apk add --no-cache ca-certificates docker-cli
+WORKDIR /app
+COPY --from=build /out/worker-sandbox /usr/local/bin/evalfrog
+COPY configs /app/configs
+ENTRYPOINT ["/usr/local/bin/evalfrog", "--sandbox-runtime"]

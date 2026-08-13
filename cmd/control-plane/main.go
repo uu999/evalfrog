@@ -74,7 +74,8 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 		fmt.Fprintln(errorOutput, err)
 		return 1
 	}
-	postgresClient, err := postgres.Open(ctx, configuration.Postgres)
+	metricRegistry := metrics.New(serviceName)
+	postgresClient, err := postgres.OpenWithAcquireObserver(ctx, configuration.Postgres, metricRegistry)
 	if err != nil {
 		logger.Error("PostgreSQL client creation failed", "error", err)
 		return 1
@@ -109,7 +110,6 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	mustRegister(logger, readiness, "redis-cache", cacheClient.Check)
 	mustRegister(logger, readiness, "redis-scheduling", schedulingClient.Check)
 	mustRegister(logger, readiness, "kafka", kafkaClient.Check)
-	metricRegistry := metrics.New(serviceName)
 	server := httpserver.New(
 		serviceName, configuration.HTTP.ControlPlaneAddress,
 		configuration.HTTP.ReadHeaderTimeout.Duration(), configuration.HTTP.IdleTimeout.Duration(),
@@ -139,7 +139,7 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	server.Handle("/v1/", httpapi.New(accessService, application, cacheClient))
 	attemptCoordinator := attempt.NewBuiltinCoordinator(store)
 	contextGateway, err := runtimecontext.NewGateway(store, cacheClient,
-		configuration.Cache.ExecutionSnapshotTTL.Duration(), configuration.Cache.ActiveRunContextTTL.Duration())
+		configuration.Cache.ExecutionSnapshotTTL.Duration(), configuration.Cache.ActiveRunContextTTL.Duration(), metricRegistry)
 	if err != nil {
 		logger.Error("execution context gateway construction failed", "error", err)
 		return 1

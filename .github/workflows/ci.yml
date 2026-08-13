@@ -30,9 +30,12 @@ jobs:
         run: go vet ./...
       - name: Unit and architecture tests
         run: go test ./...
+      - name: Go reachable-vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - name: Human Web Canvas contract and build
         working-directory: web
         run: |
+          npm audit --omit=dev --audit-level=high
           npm test
           npm run build
       - name: Authoring, definition and runtime contract repeatability
@@ -88,13 +91,15 @@ jobs:
       - name: Validate Compose model
         run: docker compose -f deployments/compose.yaml config --quiet
       - name: Start stack
-        run: docker compose -f deployments/compose.yaml up -d --build --wait
+        run: |
+          docker build -t evalfrog-sandbox-python:dev -f deployments/sandbox/Dockerfile deployments/sandbox
+          docker compose -f deployments/compose.yaml up -d --build --wait
       - name: CLI doctor
         run: docker compose -f deployments/compose.yaml run --build --rm --no-deps evalfrog-cli doctor --profile local --config-dir /app/configs
       - name: PostgreSQL integration tests
         run: |
           docker build -t evalfrog-sandbox-python:test -f deployments/sandbox/Dockerfile deployments/sandbox
-          go test -tags=integration ./tests/integration ./internal/adapters/sandbox
+          EVALFROG_M12_COMPOSE=1 go test -tags=integration ./tests/integration ./internal/adapters/sandbox
       - name: Stop M0 stack
         if: always()
         run: docker compose -f deployments/compose.yaml down -v --remove-orphans

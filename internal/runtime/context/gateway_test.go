@@ -89,6 +89,26 @@ func TestGatewayTreatsCorruptDerivedCacheAsMiss(t *testing.T) {
 	}
 }
 
+func TestGatewayRecordsBoundedCacheHitAndMissMetrics(t *testing.T) {
+	repository := &fakeRepository{metadata: metadataFixture(), snapshot: snapshotFixture(), runInput: json.RawMessage(`{"run":true}`), output: json.RawMessage(`{"value":7}`)}
+	metrics := &fakeCacheMetrics{accesses: map[string]int{}}
+	gateway, err := NewGateway(repository, newFakeCache(), time.Hour, time.Minute, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = gateway.Load(context.Background(), loadFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = gateway.Load(context.Background(), loadFixture()); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"snapshot:miss", "run_input:miss", "effective_output:miss", "snapshot:hit", "run_input:hit", "effective_output:hit"} {
+		if metrics.accesses[key] != 1 {
+			t.Fatalf("cache access %s=%d, want 1; all=%v", key, metrics.accesses[key], metrics.accesses)
+		}
+	}
+}
+
 func TestGatewayRejectsInvalidAuthoritativeContextParts(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -168,6 +188,12 @@ type fakeCache struct {
 	snapshots, runs map[string]json.RawMessage
 	outputs         map[string]json.RawMessage
 	failReads       bool
+}
+
+type fakeCacheMetrics struct{ accesses map[string]int }
+
+func (metrics *fakeCacheMetrics) ObserveExecutionContextCache(kind, outcome string) {
+	metrics.accesses[kind+":"+outcome]++
 }
 
 func newFakeCache() *fakeCache {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,7 +48,11 @@ func newM3Harness(t *testing.T) *m3Harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EVALFROG_POSTGRES_DSN", "postgres://evalfrog:evalfrog@localhost:15432/evalfrog?sslmode=disable")
+	dsn := os.Getenv("EVALFROG_INTEGRATION_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = "postgres://evalfrog:evalfrog@localhost:15432/evalfrog?sslmode=disable"
+	}
+	t.Setenv("EVALFROG_POSTGRES_DSN", dsn)
 	configuration, err := config.Load(config.LoadOptions{Directory: filepath.Join(root, "configs"), Profile: "local"})
 	if err != nil {
 		t.Fatal(err)

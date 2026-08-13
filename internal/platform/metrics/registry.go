@@ -16,6 +16,8 @@ type Registry struct {
 	KafkaConsumerLag            *prometheus.GaugeVec
 	LeaseLostTotal              *prometheus.CounterVec
 	ReadyToQueuedSeconds        prometheus.Observer
+	PostgresPoolAcquireSeconds  *prometheus.HistogramVec
+	ExecutionContextCacheAccess *prometheus.CounterVec
 	SchedulingRedisRebuildTotal *prometheus.CounterVec
 	RecoveryWakeupsTotal        *prometheus.CounterVec
 }
@@ -52,6 +54,15 @@ func New(service string) *Registry {
 		Help:    "PostgreSQL authority latency from a Node becoming Ready to a dispatched Attempt becoming Queued.",
 		Buckets: prometheus.DefBuckets,
 	})
+	postgresPoolAcquire := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "evalfrog", Name: "postgres_pool_acquire_seconds",
+		Help:    "Time spent waiting to acquire an authoritative PostgreSQL connection, including failed acquires.",
+		Buckets: []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+	}, []string{"outcome"})
+	executionContextCache := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "evalfrog", Name: "execution_context_cache_access_total",
+		Help: "Cache-aside accesses for bounded execution-context parts; cache failures and invalid data are misses.",
+	}, []string{"kind", "outcome"})
 	redisRebuild := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "evalfrog", Name: "scheduling_redis_rebuild_total",
 		Help: "Full Scheduling Redis Lane rebuild outcomes; a failure leaves admission fail-closed.",
@@ -60,9 +71,10 @@ func New(service string) *Registry {
 		Namespace: "evalfrog", Name: "runtime_recovery_wakeups_total",
 		Help: "Durable recovery wake-up emission outcomes by bounded scanner and Runtime event type.",
 	}, []string{"source", "event_type", "outcome"})
-	registry.MustRegister(buildGauge, requests, outboxAge, kafkaLag, leaseLost, readyToQueued, redisRebuild, recoveryWakeups)
+	registry.MustRegister(buildGauge, requests, outboxAge, kafkaLag, leaseLost, readyToQueued, postgresPoolAcquire, executionContextCache, redisRebuild, recoveryWakeups)
 	return &Registry{prometheus: registry, Requests: requests, OutboxOldestAgeSeconds: outboxAge,
 		KafkaConsumerLag: kafkaLag, LeaseLostTotal: leaseLost, ReadyToQueuedSeconds: readyToQueued,
+		PostgresPoolAcquireSeconds: postgresPoolAcquire, ExecutionContextCacheAccess: executionContextCache,
 		SchedulingRedisRebuildTotal: redisRebuild, RecoveryWakeupsTotal: recoveryWakeups}
 }
 
@@ -82,6 +94,16 @@ func (registry *Registry) ObserveReadyToQueued(value time.Duration) {
 	if value >= 0 {
 		registry.ReadyToQueuedSeconds.Observe(value.Seconds())
 	}
+}
+
+func (registry *Registry) ObservePostgresPoolAcquire(value time.Duration, outcome string) {
+	if value >= 0 {
+		registry.PostgresPoolAcquireSeconds.WithLabelValues(outcome).Observe(value.Seconds())
+	}
+}
+
+func (registry *Registry) ObserveExecutionContextCache(kind, outcome string) {
+	registry.ExecutionContextCacheAccess.WithLabelValues(kind, outcome).Inc()
 }
 
 func (registry *Registry) ObserveSchedulingRedisRebuild(outcome string) {
