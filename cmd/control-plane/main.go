@@ -122,7 +122,8 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 		logger.Error("execution context gateway construction failed", "error", err)
 		return 1
 	}
-	server.Handle("/internal/v1/", workerapi.NewHandler(attemptCoordinator, contextGateway, schedulingClient))
+	runtimeResources := postgres.NewRuntimeResourceResolver(store, resources.NoopSecretResolver{})
+	server.Handle("/internal/v1/", workerapi.NewHandler(attemptCoordinator, contextGateway, schedulingClient, runtimeResources))
 	schedulerID, err := (identity.UUIDv7Generator{}).New()
 	if err != nil {
 		logger.Error("scheduler identity generation failed", "error", err)

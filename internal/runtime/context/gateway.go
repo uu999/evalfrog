@@ -34,6 +34,8 @@ type ExecutionContext struct {
 	ExecutionNodeID  string                        `json:"execution_node_id"`
 	AttemptID        string                        `json:"attempt_id"`
 	AttemptSequence  uint32                        `json:"attempt_sequence"`
+	LeaseToken       string                        `json:"-"`
+	FencingToken     uint64                        `json:"-"`
 	SnapshotID       string                        `json:"snapshot_id"`
 	ResourceClass    scheduling.ResourceClass      `json:"resource_class"`
 	Operation        dsl.Operation                 `json:"operation"`
@@ -133,6 +135,7 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 		ContextVersion: 1, ProjectID: metadata.ProjectID, RunID: metadata.RunID,
 		NodeRunID: metadata.NodeRunID, ExecutionNodeID: metadata.ExecutionNodeID,
 		AttemptID: metadata.AttemptID, AttemptSequence: metadata.AttemptSequence,
+		LeaseToken: command.LeaseToken, FencingToken: command.FencingToken,
 		SnapshotID: metadata.SnapshotID, ResourceClass: metadata.ResourceClass,
 		Operation: node.Operation, ExecutionPolicy: node.ExecutionPolicy, OutputContract: node.Outputs,
 		WorkflowInput: cloneRaw(workflowInput), Inputs: cloneMap(metadata.ResolvedInputs),

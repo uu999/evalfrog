@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/uu999/evalfrog/internal/dsl"
+	"github.com/uu999/evalfrog/internal/resources"
 	"github.com/uu999/evalfrog/internal/runtime"
 	"github.com/uu999/evalfrog/internal/runtime/attempt"
 	runtimecontext "github.com/uu999/evalfrog/internal/runtime/context"
@@ -32,19 +33,31 @@ type CapacityRegistry interface {
 	RegisterWorker(context.Context, scheduling.WorkerRegistration) error
 }
 
+type ResourceResolver interface {
+	ResolveConnection(context.Context, resources.RuntimeResolveCommand) (resources.ConnectionRuntime, error)
+	ResolveServiceOperation(context.Context, resources.RuntimeResolveCommand) (resources.ServiceOperationRuntime, error)
+}
+
 type Handler struct {
 	coordinator AttemptCoordinator
 	context     ContextGateway
 	registry    CapacityRegistry
+	resources   ResourceResolver
 	router      *http.ServeMux
 }
 
-func NewHandler(coordinator AttemptCoordinator, gateway ContextGateway, registry CapacityRegistry) *Handler {
-	handler := &Handler{coordinator: coordinator, context: gateway, registry: registry, router: http.NewServeMux()}
+func NewHandler(coordinator AttemptCoordinator, gateway ContextGateway, registry CapacityRegistry, resolvers ...ResourceResolver) *Handler {
+	var resourceResolver ResourceResolver
+	if len(resolvers) > 0 {
+		resourceResolver = resolvers[0]
+	}
+	handler := &Handler{coordinator: coordinator, context: gateway, registry: registry, resources: resourceResolver, router: http.NewServeMux()}
 	handler.router.HandleFunc("POST /internal/v1/attempts/{attempt_id}/claim", handler.claim)
 	handler.router.HandleFunc("POST /internal/v1/attempts/{attempt_id}/heartbeat", handler.heartbeat)
 	handler.router.HandleFunc("POST /internal/v1/attempts/{attempt_id}/complete", handler.complete)
 	handler.router.HandleFunc("POST /internal/v1/attempts/{attempt_id}/context", handler.loadContext)
+	handler.router.HandleFunc("POST /internal/v1/attempts/{attempt_id}/resources/connection", handler.resolveConnection)
+	handler.router.HandleFunc("POST /internal/v1/attempts/{attempt_id}/resources/service-operation", handler.resolveServiceOperation)
 	handler.router.HandleFunc("POST /internal/v1/workers/{worker_id}/heartbeat", handler.registerWorker)
 	return handler
 }
@@ -127,6 +140,17 @@ type contextRequest struct {
 	FencingToken    uint64 `json:"fencing_token"`
 }
 
+type resourceRequest struct {
+	ProjectID, RunID string
+	AttemptSequence  uint32 `json:"attempt_sequence"`
+	LeaseToken       string `json:"lease_token"`
+	FencingToken     uint64 `json:"fencing_token"`
+	ConnectionID     string `json:"connection_id,omitempty"`
+	ServiceID        string `json:"service_id,omitempty"`
+	Operation        string `json:"operation,omitempty"`
+	ContractRevision string `json:"contract_revision,omitempty"`
+}
+
 type leaseResponse struct {
 	LeaseToken   string    `json:"lease_token"`
 	Owner        string    `json:"owner"`
@@ -197,6 +221,38 @@ func (handler *Handler) loadContext(writer http.ResponseWriter, request *http.Re
 		ProjectID: body.ProjectID, RunID: body.RunID, AttemptID: request.PathValue("attempt_id"), AttemptSequence: body.AttemptSequence,
 		LeaseToken: body.LeaseToken, FencingToken: body.FencingToken,
 	})
+	if writeDomainError(writer, err) {
+		return
+	}
+	writeJSON(writer, http.StatusOK, value)
+}
+
+func (handler *Handler) resolveConnection(writer http.ResponseWriter, request *http.Request) {
+	var body resourceRequest
+	if !decode(writer, request, &body) {
+		return
+	}
+	if handler.resources == nil {
+		writeError(writer, http.StatusServiceUnavailable, "RESOURCE_RESOLVER_UNAVAILABLE", "managed resource resolver is unavailable")
+		return
+	}
+	value, err := handler.resources.ResolveConnection(request.Context(), resources.RuntimeResolveCommand{ProjectID: body.ProjectID, RunID: body.RunID, AttemptID: request.PathValue("attempt_id"), AttemptSequence: body.AttemptSequence, LeaseToken: body.LeaseToken, FencingToken: body.FencingToken, ConnectionID: body.ConnectionID})
+	if writeDomainError(writer, err) {
+		return
+	}
+	writeJSON(writer, http.StatusOK, value)
+}
+
+func (handler *Handler) resolveServiceOperation(writer http.ResponseWriter, request *http.Request) {
+	var body resourceRequest
+	if !decode(writer, request, &body) {
+		return
+	}
+	if handler.resources == nil {
+		writeError(writer, http.StatusServiceUnavailable, "RESOURCE_RESOLVER_UNAVAILABLE", "managed resource resolver is unavailable")
+		return
+	}
+	value, err := handler.resources.ResolveServiceOperation(request.Context(), resources.RuntimeResolveCommand{ProjectID: body.ProjectID, RunID: body.RunID, AttemptID: request.PathValue("attempt_id"), AttemptSequence: body.AttemptSequence, LeaseToken: body.LeaseToken, FencingToken: body.FencingToken, ServiceID: body.ServiceID, Operation: body.Operation, ContractRevision: body.ContractRevision})
 	if writeDomainError(writer, err) {
 		return
 	}

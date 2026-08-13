@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: EvalFrog Worker API
-  version: 1.0.0-m7
+  version: 1.0.0-m8
   description: Internal HTTP/JSON control protocol. Workers never receive database credentials.
 paths:
   /internal/v1/attempts/{attempt_id}/claim:
@@ -25,6 +25,18 @@ paths:
       operationId: loadExecutionContext
       parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
       responses: {'200': {description: Lease-scoped execution context}}
+  /internal/v1/attempts/{attempt_id}/resources/connection:
+    post:
+      operationId: resolveManagedConnection
+      parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ResourceResolveRequest'}}}}
+      responses: {'200': {description: Lease-scoped managed Connection material}}
+  /internal/v1/attempts/{attempt_id}/resources/service-operation:
+    post:
+      operationId: resolveManagedServiceOperation
+      parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ResourceResolveRequest'}}}}
+      responses: {'200': {description: Lease-scoped managed Service Operation material}}
   /internal/v1/workers/{worker_id}/heartbeat:
     post:
       operationId: registerWorkerCapacity
@@ -52,3 +64,17 @@ components:
         resource_class: {enum: [builtin, sandbox]}
         capabilities: {type: array, minItems: 1, items: {$ref: '#/components/schemas/Capability'}}
         lease_duration_ms: {type: integer, minimum: 1}
+    ResourceResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, run_id, attempt_sequence, lease_token, fencing_token]
+      properties:
+        project_id: {type: string, minLength: 1}
+        run_id: {type: string, minLength: 1}
+        attempt_sequence: {type: integer, minimum: 1}
+        lease_token: {type: string, minLength: 1}
+        fencing_token: {type: integer, minimum: 1}
+        connection_id: {type: string}
+        service_id: {type: string}
+        operation: {type: string}
+        contract_revision: {type: string}
