@@ -34,6 +34,7 @@ type applicationStub struct {
 	run           projection.RunView
 	cancelApplied bool
 	cancelCalled  bool
+	replayCalled  bool
 }
 
 func (stub *applicationStub) CreateWorkflow(context.Context, definition.CreateWorkflowCommand) (definition.Workflow, definition.DraftRevision, []ir.Diagnostic, error) {
@@ -79,6 +80,13 @@ func (stub *applicationStub) CancelRun(context.Context, string, string, string, 
 }
 func (stub *applicationStub) GetRun(context.Context, string, string, string) (projection.RunView, error) {
 	return stub.run, stub.getError
+}
+func (stub *applicationStub) GetDiagnostics(context.Context, string, string, string) (projection.DiagnosticView, error) {
+	return projection.DiagnosticView{Run: stub.run}, stub.getError
+}
+func (stub *applicationStub) ReplayRun(context.Context, string, string, string, string, string, string) (bool, error) {
+	stub.replayCalled = true
+	return true, nil
 }
 func (*applicationStub) NodeTypes() []catalog.NodeDescription { return nil }
 func (*applicationStub) Connections(context.Context, string, string) ([]resources.ConnectionSummary, error) {
@@ -206,5 +214,17 @@ func TestRunEventsAreWakeupsAndNeverCarryRuntimeState(t *testing.T) {
 	body := response.Body.String()
 	if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), "text/event-stream") || !strings.Contains(body, "event: ready") || !strings.Contains(body, "event: update") || strings.Contains(body, "failed") {
 		t.Fatalf("status=%d header=%q body=%q", response.Code, response.Header().Get("Content-Type"), body)
+	}
+}
+
+func TestReplayRequestsOnlyAnActionableWakeup(t *testing.T) {
+	stub := &applicationStub{}
+	handler := New(authenticatorStub{}, stub)
+	request := httptest.NewRequest(http.MethodPost, "/v1/projects/project-1/runs/run-1/replay", strings.NewReader(`{"event_type":"attempt.lost","aggregate_id":"attempt-1"}`))
+	request.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || !stub.replayCalled || !strings.Contains(response.Body.String(), `"accepted":true`) {
+		t.Fatalf("status=%d called=%t body=%s", response.Code, stub.replayCalled, response.Body.String())
 	}
 }

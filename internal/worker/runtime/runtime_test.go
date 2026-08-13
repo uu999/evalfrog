@@ -192,6 +192,31 @@ func TestStaleCompletionAndHeartbeatFailureCannotBecomeEffective(t *testing.T) {
 	}
 }
 
+func TestCancellationStopsClaimedAttemptAndPropagatesHeartbeatCancellation(t *testing.T) {
+	t.Run("already cancelled when claimed", func(t *testing.T) {
+		worker, consumer, attempts := runtimeFixture(t, EchoTestExecutor{Operation: dsl.Coordinate{Type: "task.python", Version: 1}})
+		attempts.claimLease = attempt.Lease{Token: "lease", Owner: "worker", FencingToken: 1, ExpiresAt: time.Now().Add(time.Minute), CancelRequested: true}
+		if err := worker.receiveAndExecute(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if consumer.acks.Load() != 1 || attempts.loads.Load() != 0 || attempts.completes.Load() != 1 || attempts.complete.Result.State != platformruntime.AttemptCanceled {
+			t.Fatalf("acks=%d loads=%d completed=%d result=%+v", consumer.acks.Load(), attempts.loads.Load(), attempts.completes.Load(), attempts.complete.Result)
+		}
+	})
+	t.Run("heartbeat cancellation interrupts executor", func(t *testing.T) {
+		executor := resultExecutor{coordinate: dsl.Coordinate{Type: "task.python", Version: 1}, waitForCancellation: true}
+		worker, _, attempts := runtimeFixture(t, executor)
+		worker.settings.HeartbeatInterval = time.Millisecond
+		attempts.heartbeatLease.CancelRequested = true
+		if err := worker.receiveAndExecute(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if attempts.completes.Load() != 1 || attempts.complete.Result.State != platformruntime.AttemptCanceled {
+			t.Fatalf("completed=%d result=%+v", attempts.completes.Load(), attempts.complete.Result)
+		}
+	})
+}
+
 func TestCatalogResourceClassAndSettingsValidation(t *testing.T) {
 	python := EchoTestExecutor{Operation: dsl.Coordinate{Type: "task.python", Version: 1}}
 	if _, err := NewCatalog(scheduling.ResourceBuiltin, python); err == nil {
@@ -283,16 +308,21 @@ type fakeAttempts struct {
 	operation                           dsl.Coordinate
 	attemptTimeout                      time.Duration
 	complete                            attempt.CompleteCommand
+	claimLease, heartbeatLease          attempt.Lease
 }
 
 func (value *fakeAttempts) Claim(context.Context, attempt.ClaimCommand) (attempt.Lease, error) {
 	if value.claimErr != nil {
 		return attempt.Lease{}, value.claimErr
 	}
-	return attempt.Lease{Token: "lease", Owner: "worker", FencingToken: 1, ExpiresAt: time.Now().Add(time.Minute)}, nil
+	lease := value.claimLease
+	if lease.Token == "" {
+		lease = attempt.Lease{Token: "lease", Owner: "worker", FencingToken: 1, ExpiresAt: time.Now().Add(time.Minute)}
+	}
+	return lease, nil
 }
 func (value *fakeAttempts) Heartbeat(context.Context, attempt.HeartbeatCommand) (attempt.Lease, error) {
-	return attempt.Lease{}, value.heartbeatErr
+	return value.heartbeatLease, value.heartbeatErr
 }
 func (value *fakeAttempts) Complete(_ context.Context, command attempt.CompleteCommand) (bool, error) {
 	value.complete = command

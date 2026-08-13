@@ -31,6 +31,8 @@ type fakeRunTx struct {
 	inboxError        error
 	initializeError   error
 	advanceError      error
+	authorityNow      time.Time
+	authorityNowError error
 	failInitError     error
 	advancedBefore    State
 	advancedAfter     State
@@ -38,6 +40,15 @@ type fakeRunTx struct {
 
 func (tx *fakeRunTx) AcceptInbox(context.Context, string, eventing.RuntimeEvent) (bool, error) {
 	return tx.accepted, tx.inboxError
+}
+func (tx *fakeRunTx) AuthorityNow(context.Context) (time.Time, error) {
+	if tx.authorityNowError != nil || !tx.authorityNow.IsZero() {
+		return tx.authorityNow, tx.authorityNowError
+	}
+	if !tx.state.Run.CreatedAt.IsZero() {
+		return tx.state.Run.CreatedAt, nil
+	}
+	return tx.run.CreatedAt, nil
 }
 func (tx *fakeRunTx) LoadRun(context.Context, string, string) (runtime.WorkflowRunRecord, error) {
 	return tx.run, tx.loadRunError
@@ -73,7 +84,7 @@ func TestConsumerInitializesPendingRunAndDeduplicatesInbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx := &fakeRunTx{accepted: true, run: pending.Snapshot(), snapshot: harness.Engine.snapshot}
+	tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), run: pending.Snapshot(), snapshot: harness.Engine.snapshot}
 	consumer, _ := NewConsumer(&fakeTransactions{tx})
 	event := testRuntimeEvent(eventing.RunCreated, state.Run.ID, state.Run.ID, state.Run.CreatedAt)
 	if err = consumer.Consume(context.Background(), event); err != nil || !tx.initialized {
@@ -88,7 +99,7 @@ func TestConsumerInitializesPendingRunAndDeduplicatesInbox(t *testing.T) {
 func TestConsumerIgnoresRunCreatedAfterInitialization(t *testing.T) {
 	harness := newTestHarness(t, linearDocument(1))
 	state := harness.Engine.SnapshotState()
-	tx := &fakeRunTx{accepted: true, run: state.Run}
+	tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), run: state.Run}
 	consumer, _ := NewConsumer(&fakeTransactions{tx})
 	event := testRuntimeEvent(eventing.RunCreated, state.Run.ID, state.Run.ID, state.Run.CreatedAt)
 	if err := consumer.Consume(context.Background(), event); err != nil || tx.initialized || tx.failedInit {
@@ -105,13 +116,13 @@ func TestConsumerFailsUnsupportedInitializationAndRollsBackMissingFact(t *testin
 	})
 	unsupported := harness.Engine.snapshot
 	unsupported.DSL.Nodes[1].Operation.Version = 99
-	tx := &fakeRunTx{accepted: true, run: pending.Snapshot(), snapshot: unsupported}
+	tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), run: pending.Snapshot(), snapshot: unsupported}
 	consumer, _ := NewConsumer(&fakeTransactions{tx})
 	event := testRuntimeEvent(eventing.RunCreated, "run", "run", harness.Now())
 	if err := consumer.Consume(context.Background(), event); err != nil || !tx.failedInit {
 		t.Fatalf("failedInit=%v err=%v", tx.failedInit, err)
 	}
-	tx = &fakeRunTx{accepted: true, loadStateError: errors.New("attempt result missing")}
+	tx = &fakeRunTx{accepted: true, authorityNow: harness.Now(), loadStateError: errors.New("attempt result missing")}
 	consumer, _ = NewConsumer(&fakeTransactions{tx})
 	event = testRuntimeEvent(eventing.AttemptCompleted, "run", "attempt", harness.Now())
 	if err := consumer.Consume(context.Background(), event); err == nil {
@@ -122,7 +133,7 @@ func TestConsumerFailsUnsupportedInitializationAndRollsBackMissingFact(t *testin
 func TestConsumerIgnoresTerminalRunEvent(t *testing.T) {
 	harness := newTestHarness(t, linearDocument(1))
 	completeAllReady(t, harness)
-	tx := &fakeRunTx{accepted: true, state: harness.Engine.SnapshotState(), snapshot: harness.Engine.snapshot}
+	tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: harness.Engine.SnapshotState(), snapshot: harness.Engine.snapshot}
 	consumer, _ := NewConsumer(&fakeTransactions{tx})
 	event := testRuntimeEvent(eventing.RunDeadlineReached, "run", "run", harness.Now().Add(time.Hour))
 	if err := consumer.Consume(context.Background(), event); err != nil || tx.advanced {
@@ -142,7 +153,7 @@ func TestConsumerCancelBeforeRunInitializationConvergesWithoutNodeRuns(t *testin
 		t.Fatal(err)
 	}
 	before := State{Run: pending.Snapshot()}
-	consumer, _ := NewConsumer(&fakeTransactions{tx: &fakeRunTx{accepted: true, state: before}})
+	consumer, _ := NewConsumer(&fakeTransactions{tx: &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: before}})
 	event := testRuntimeEvent(eventing.RunCancelRequested, before.Run.ID, before.Run.ID, harness.Now())
 	if err = consumer.Consume(context.Background(), event); err != nil {
 		t.Fatal(err)
@@ -152,11 +163,216 @@ func TestConsumerCancelBeforeRunInitializationConvergesWithoutNodeRuns(t *testin
 		t.Fatalf("before=%+v after=%+v advanced=%v", tx.advancedBefore.Run, tx.advancedAfter.Run, tx.advanced)
 	}
 
-	ignoredTx := &fakeRunTx{accepted: true, state: before}
+	ignoredTx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: before}
 	ignored, _ := NewConsumer(&fakeTransactions{tx: ignoredTx})
 	if err = ignored.Consume(context.Background(), testRuntimeEvent(eventing.RunDeadlineReached, before.Run.ID, before.Run.ID, harness.Now())); err != nil || ignoredTx.advanced {
 		t.Fatalf("pending non-cancel advanced=%v err=%v", ignoredTx.advanced, err)
 	}
+}
+
+func TestConsumerPendingTerminationUsesDurableFactsAndPropagatesPersistenceFailure(t *testing.T) {
+	harness := newTestHarness(t, linearDocument(1))
+	state := harness.Engine.SnapshotState()
+	pending, err := runtime.NewWorkflowRun(runtime.CreateRunCommand{
+		RunID: state.Run.ID, ProjectID: state.Run.ProjectID, WorkflowID: state.Run.WorkflowID,
+		Purpose: state.Run.Purpose, Definition: state.Run.Definition, WorkflowInput: state.Run.WorkflowInput,
+		CreatedAt: state.Run.CreatedAt, DeadlineAt: state.Run.DeadlineAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := State{Run: pending.Snapshot()}
+
+	t.Run("unrelated wakeup cannot terminate an unexpired pending run", func(t *testing.T) {
+		tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: before}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunDeadlineReached, before.Run.ID, before.Run.ID, harness.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if tx.advanced {
+			t.Fatal("unexpired pending run was changed by an unrelated wakeup")
+		}
+	})
+
+	t.Run("cancel persists the terminal transition atomically", func(t *testing.T) {
+		tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: before, advanceError: errors.New("persist cancel")}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCancelRequested, before.Run.ID, before.Run.ID, harness.Now())); err == nil || !tx.advanced {
+			t.Fatalf("advance=%t err=%v", tx.advanced, err)
+		}
+	})
+
+	t.Run("deadline persists the terminal transition atomically", func(t *testing.T) {
+		tx := &fakeRunTx{accepted: true, authorityNow: before.Run.DeadlineAt, run: before.Run, advanceError: errors.New("persist deadline")}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCreated, before.Run.ID, before.Run.ID, before.Run.CreatedAt)); err == nil || !tx.advanced {
+			t.Fatalf("advance=%t err=%v", tx.advanced, err)
+		}
+	})
+}
+
+func TestConsumerPendingTerminationRejectsInvalidOrNoopTransitions(t *testing.T) {
+	harness := newTestHarness(t, linearDocument(1))
+	state := harness.Engine.SnapshotState()
+	pending, err := runtime.NewWorkflowRun(runtime.CreateRunCommand{
+		RunID: state.Run.ID, ProjectID: state.Run.ProjectID, WorkflowID: state.Run.WorkflowID,
+		Purpose: state.Run.Purpose, Definition: state.Run.Definition, WorkflowInput: state.Run.WorkflowInput,
+		CreatedAt: state.Run.CreatedAt, DeadlineAt: state.Run.DeadlineAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := pending.Snapshot()
+	consumer, _ := NewConsumer(&fakeTransactions{tx: &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: State{Run: before}}})
+
+	// An Attempt event cannot create a terminal intent for an uninitialized Run.
+	if err = consumer.Consume(context.Background(), testRuntimeEvent(eventing.AttemptLost, before.ID, "attempt", harness.Now())); err != nil {
+		t.Fatal(err)
+	}
+	tx := consumer.transactions.(*fakeTransactions).tx
+	if tx.advanced {
+		t.Fatal("attempt wakeup terminated a pending run")
+	}
+
+	// A deadline wakeup before the durable deadline is a no-op, even if it was
+	// emitted by a stale scanner.
+	tx = &fakeRunTx{accepted: true, authorityNow: harness.Now(), run: before, snapshot: harness.Engine.snapshot}
+	consumer, _ = NewConsumer(&fakeTransactions{tx: tx})
+	if err = consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCreated, before.ID, before.ID, before.CreatedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if !tx.initialized {
+		t.Fatal("unexpired pending run was not initialized")
+	}
+
+	// A persisted cancellation that wins must remain idempotent when duplicate
+	// durable wakeups arrive after the transition has already been applied.
+	canceled := before
+	canceled.CancelRequestedAt = harness.Now()
+	tx = &fakeRunTx{accepted: true, authorityNow: harness.Now(), state: State{Run: canceled}}
+	consumer, _ = NewConsumer(&fakeTransactions{tx: tx})
+	if err = consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCancelRequested, canceled.ID, canceled.ID, harness.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if !tx.advanced || tx.advancedAfter.Run.State != runtime.RunCanceled {
+		t.Fatalf("first cancellation did not converge: %+v", tx.advancedAfter.Run)
+	}
+	tx.state = tx.advancedAfter
+	tx.advanced = false
+	if err = consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCancelRequested, canceled.ID, canceled.ID, harness.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if tx.advanced {
+		t.Fatal("terminal cancellation advanced twice")
+	}
+}
+
+func TestConsumerPendingTerminationRejectsCorruptPersistedRun(t *testing.T) {
+	consumer, _ := NewConsumer(&fakeTransactions{tx: &fakeRunTx{accepted: true}})
+	event := testRuntimeEvent(eventing.RunDeadlineReached, "run", "run", time.Now().UTC())
+	if err := consumer.advancePendingDeadline(context.Background(), consumer.transactions.(*fakeTransactions).tx, event, runtime.WorkflowRunRecord{}, event.OccurredAt); err == nil {
+		t.Fatal("corrupt pending run was accepted by deadline recovery")
+	}
+	if err := consumer.advancePendingCancellation(context.Background(), consumer.transactions.(*fakeTransactions).tx, event, runtime.WorkflowRunRecord{}); err == nil {
+		t.Fatal("corrupt pending run was accepted by cancellation recovery")
+	}
+	if _, exists := attemptNodeID(State{Attempts: []runtime.NodeAttemptRecord{{ID: "attempt", NodeRunID: "unknown"}}}, "attempt"); exists {
+		t.Fatal("attempt without a persisted node owner was accepted")
+	}
+}
+
+func TestConsumerRunCreatedHonorsPersistedCancellationIntent(t *testing.T) {
+	harness := newTestHarness(t, linearDocument(1))
+	state := harness.Engine.SnapshotState()
+	pending, err := runtime.NewWorkflowRun(runtime.CreateRunCommand{
+		RunID: state.Run.ID, ProjectID: state.Run.ProjectID, WorkflowID: state.Run.WorkflowID,
+		Purpose: state.Run.Purpose, Definition: state.Run.Definition, WorkflowInput: state.Run.WorkflowInput,
+		CreatedAt: state.Run.CreatedAt, DeadlineAt: state.Run.DeadlineAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := pending.Snapshot()
+	record.CancelRequestedAt = harness.Now().Add(time.Millisecond)
+	tx := &fakeRunTx{accepted: true, authorityNow: harness.Now(), run: record, snapshot: harness.Engine.snapshot}
+	consumer, _ := NewConsumer(&fakeTransactions{tx})
+	if err = consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCreated, record.ID, record.ID, record.CreatedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if tx.initialized || !tx.advanced || tx.advancedAfter.Run.State != runtime.RunCanceled || len(tx.advancedAfter.Nodes) != 0 {
+		t.Fatalf("initialized=%t advanced=%t after=%+v", tx.initialized, tx.advanced, tx.advancedAfter)
+	}
+}
+
+func TestConsumerUsesAuthorityTimeForDelayedWakeups(t *testing.T) {
+	t.Run("expired pending run is not initialized", func(t *testing.T) {
+		harness := newTestHarness(t, linearDocument(1))
+		state := harness.Engine.SnapshotState()
+		pending, err := runtime.NewWorkflowRun(runtime.CreateRunCommand{
+			RunID: state.Run.ID, ProjectID: state.Run.ProjectID, WorkflowID: state.Run.WorkflowID,
+			Purpose: state.Run.Purpose, Definition: state.Run.Definition, WorkflowInput: state.Run.WorkflowInput,
+			CreatedAt: state.Run.CreatedAt, DeadlineAt: state.Run.DeadlineAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx := &fakeRunTx{accepted: true, authorityNow: pending.DeadlineAt(), run: pending.Snapshot(), snapshot: harness.Engine.snapshot}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err = consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCreated, pending.ID(), pending.ID(), pending.CreatedAt())); err != nil {
+			t.Fatal(err)
+		}
+		if tx.initialized || !tx.advanced || tx.advancedAfter.Run.State != runtime.RunTimedOut {
+			t.Fatalf("initialized=%t advanced=%t state=%s", tx.initialized, tx.advanced, tx.advancedAfter.Run.State)
+		}
+	})
+
+	t.Run("late retry due cannot revive expired run", func(t *testing.T) {
+		policy := dsl.ExecutionPolicy{MaxAttempts: 2, MaxRecoveries: 1, AttemptTimeoutMS: 1000, RetryBackoff: &dsl.RetryBackoff{Kind: "fixed", DelayMS: 10}, RetryableErrorCodes: []string{"TEMP"}}
+		harness := newTestHarness(t, linearDocumentWithPolicy(1, policy))
+		attempts, _ := harness.StartReady()
+		nodeID := harness.Engine.attemptNodes[attempts[0]]
+		_, _ = harness.Engine.RecordAttemptResult(attempts[0], runtime.AttemptResult{State: runtime.AttemptFailed, ErrorCode: "TEMP"})
+		if err := harness.Engine.HandleAttemptCompleted(attempts[0], harness.Now()); err != nil {
+			t.Fatal(err)
+		}
+		state := harness.Engine.SnapshotState()
+		tx := &fakeRunTx{accepted: true, authorityNow: state.Run.DeadlineAt, state: state, snapshot: harness.Engine.snapshot}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RetryDue, state.Run.ID, attempts[0], harness.Now().Add(10*time.Millisecond))); err != nil {
+			t.Fatal(err)
+		}
+		if !tx.advanced || tx.advancedAfter.Run.State != runtime.RunTimedOut {
+			t.Fatalf("node=%s advanced=%t state=%s", nodeID, tx.advanced, tx.advancedAfter.Run.State)
+		}
+	})
+
+	t.Run("cancel requested before deadline wins delayed delivery race", func(t *testing.T) {
+		harness := newTestHarness(t, linearDocument(1))
+		state := harness.Engine.SnapshotState()
+		state.Run.CancelRequestedAt = state.Run.DeadlineAt.Add(-time.Nanosecond)
+		tx := &fakeRunTx{accepted: true, authorityNow: state.Run.DeadlineAt.Add(time.Second), state: state, snapshot: harness.Engine.snapshot}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.AttemptCompleted, state.Run.ID, "unknown", harness.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if !tx.advanced || tx.advancedAfter.Run.State != runtime.RunCanceled {
+			t.Fatalf("advanced=%t state=%s", tx.advanced, tx.advancedAfter.Run.State)
+		}
+	})
+
+	t.Run("cancellation persisted after deadline cannot override timeout", func(t *testing.T) {
+		harness := newTestHarness(t, linearDocument(1))
+		state := harness.Engine.SnapshotState()
+		state.Run.CancelRequestedAt = state.Run.DeadlineAt.Add(time.Nanosecond)
+		tx := &fakeRunTx{accepted: true, authorityNow: state.Run.DeadlineAt.Add(time.Second), state: state, snapshot: harness.Engine.snapshot}
+		consumer, _ := NewConsumer(&fakeTransactions{tx})
+		if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunCancelRequested, state.Run.ID, state.Run.ID, harness.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if !tx.advanced || tx.advancedAfter.Run.State != runtime.RunTimedOut {
+			t.Fatalf("advanced=%t state=%s", tx.advanced, tx.advancedAfter.Run.State)
+		}
+	})
 }
 
 func TestConsumerAdvancesCompletionRetryCancelAndDeadlineSignals(t *testing.T) {
@@ -235,6 +451,7 @@ func TestConsumerPropagatesTransactionAndStorageErrors(t *testing.T) {
 	event := testRuntimeEvent(eventing.RunCreated, "run", "run", harness.Now())
 	for _, tx := range []*fakeRunTx{
 		{accepted: true, loadRunError: errors.New("load run")},
+		{accepted: true, run: pending.Snapshot(), authorityNowError: errors.New("authority clock")},
 		{accepted: true, run: pending.Snapshot(), loadSnapshotError: errors.New("load snapshot")},
 	} {
 		consumer, _ := NewConsumer(&fakeTransactions{tx})
@@ -246,6 +463,11 @@ func TestConsumerPropagatesTransactionAndStorageErrors(t *testing.T) {
 	consumer, _ := NewConsumer(&fakeTransactions{tx})
 	if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunDeadlineReached, "run", "run", harness.Now())); err == nil {
 		t.Fatal("state load error was hidden")
+	}
+	tx = &fakeRunTx{accepted: true, state: harness.Engine.SnapshotState(), snapshot: harness.Engine.snapshot, authorityNowError: errors.New("authority clock")}
+	consumer, _ = NewConsumer(&fakeTransactions{tx})
+	if err := consumer.Consume(context.Background(), testRuntimeEvent(eventing.RunDeadlineReached, "run", "run", harness.Now())); err == nil {
+		t.Fatal("authority clock error was hidden")
 	}
 	for _, tx = range []*fakeRunTx{
 		{accepted: true, inboxError: errors.New("inbox")},

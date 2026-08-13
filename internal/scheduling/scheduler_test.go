@@ -43,6 +43,19 @@ type changingCapacity struct {
 	err      error
 }
 
+type recordingObserver struct {
+	readyLatencies []time.Duration
+	rebuilds       []string
+}
+
+func (observer *recordingObserver) ObserveReadyToQueued(value time.Duration) {
+	observer.readyLatencies = append(observer.readyLatencies, value)
+}
+
+func (observer *recordingObserver) ObserveSchedulingRedisRebuild(outcome string) {
+	observer.rebuilds = append(observer.rebuilds, outcome)
+}
+
 func (provider *changingCapacity) HealthyCapacity(context.Context) (Capacity, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
@@ -80,6 +93,7 @@ type memoryStore struct {
 	credits      map[int][]PlannedAdmission
 	reservations map[string]Reservation
 	fail         error
+	failRebuild  error
 	reserveCalls int
 }
 
@@ -121,6 +135,9 @@ func (store *memoryStore) ListReservations(context.Context, int) ([]Reservation,
 func (store *memoryStore) RebuildLane(_ context.Context, _ BalancerLease, state LaneState, _, _ time.Duration) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if store.failRebuild != nil {
+		return store.failRebuild
+	}
 	if store.fail != nil {
 		return store.fail
 	}
@@ -223,6 +240,56 @@ func TestSchedulerRebuildsBeforeActivationAndAdmitsWithinPlan(t *testing.T) {
 	}
 	if len(tasks) != 8 || len(store.reservations) != 8 {
 		t.Fatalf("tasks=%d reservations=%d", len(tasks), len(store.reservations))
+	}
+}
+
+func TestSchedulerObservesRebuildAndAuthoritativeDispatchLatency(t *testing.T) {
+	authority := &fakeAuthority{snapshot: fixtureSnapshot(1, 1, ResourceBuiltin)}
+	store := &memoryStore{}
+	observer := &recordingObserver{}
+	settings := Settings{LaneCount: 8, CreditGrantBatch: 4, CandidateBatch: 8, AdmissionConcurrency: 2, Epoch: time.Second, ActiveProjectTTL: 5 * time.Second, BalancerLease: 2 * time.Second, ReservationTTL: time.Minute, DispatchBufferFactor: 1, CapacityChangeLimit: 0.1}
+	now := time.Date(2026, 8, 12, 0, 0, 1, 0, time.UTC)
+	scheduler, err := New(authority, store, FixedCapacity{Pools: map[ResourceClass]int{ResourceBuiltin: 1}}, &sequenceIDs{}, clock.NewFake(now), "scheduler", settings, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = scheduler.Rebalance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.rebuilds) != 1 || observer.rebuilds[0] != "success" {
+		t.Fatalf("rebuild observations=%v", observer.rebuilds)
+	}
+	lane, _ := LaneFor("project-000", settings.LaneCount)
+	if _, err = scheduler.AdmitLane(context.Background(), lane, 1, "trace"); err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.readyLatencies) != 1 || observer.readyLatencies[0] != time.Second {
+		t.Fatalf("ready latencies=%v", observer.readyLatencies)
+	}
+}
+
+func TestSchedulerObservesRebuildFailure(t *testing.T) {
+	store := &memoryStore{fail: errors.New("redis unavailable")}
+	observer := &recordingObserver{}
+	settings := Settings{LaneCount: 8, CreditGrantBatch: 4, CandidateBatch: 8, AdmissionConcurrency: 2, Epoch: time.Second, ActiveProjectTTL: 5 * time.Second, BalancerLease: 2 * time.Second, ReservationTTL: time.Minute, DispatchBufferFactor: 1, CapacityChangeLimit: 0.1}
+	scheduler, err := New(&fakeAuthority{snapshot: fixtureSnapshot(1, 1, ResourceBuiltin)}, store, FixedCapacity{Pools: map[ResourceClass]int{ResourceBuiltin: 1}}, &sequenceIDs{}, clock.NewFake(time.Now()), "scheduler", settings, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = scheduler.Rebalance(context.Background()); err == nil {
+		t.Fatal("rebuild failure was hidden")
+	}
+	if len(observer.rebuilds) != 0 {
+		t.Fatalf("failure before rebuild must not report a rebuild result: %v", observer.rebuilds)
+	}
+
+	store = &memoryStore{candidates: map[int][]Candidate{}, credits: map[int][]PlannedAdmission{}, failRebuild: errors.New("rebuild failed")}
+	scheduler, err = New(&fakeAuthority{snapshot: fixtureSnapshot(1, 1, ResourceBuiltin)}, store, FixedCapacity{Pools: map[ResourceClass]int{ResourceBuiltin: 1}}, &sequenceIDs{}, clock.NewFake(time.Now()), "scheduler", settings, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = scheduler.Rebalance(context.Background()); err == nil || len(observer.rebuilds) != 1 || observer.rebuilds[0] != "failure" {
+		t.Fatalf("err=%v rebuild observations=%v", err, observer.rebuilds)
 	}
 }
 

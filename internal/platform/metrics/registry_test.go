@@ -5,15 +5,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRegistryExposesBuildMetric(t *testing.T) {
 	t.Parallel()
 	registry := New("evalfrog-test")
+	registry.ObserveOutboxOldestAge(time.Second)
+	registry.ObserveKafkaConsumerLag("runtime-engine-v1", "runtime-events", 2)
+	registry.ObserveLeaseLost("reaper")
+	registry.ObserveReadyToQueued(time.Millisecond)
+	registry.ObserveSchedulingRedisRebuild("success")
+	registry.ObserveRecoveryWakeup("retry-timer", "retry.due", "emitted")
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	registry.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "evalfrog_build_info") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "evalfrog_build_info") || !strings.Contains(response.Body.String(), "evalfrog_outbox_oldest_unpublished_age_seconds") || !strings.Contains(response.Body.String(), "evalfrog_runtime_recovery_wakeups_total") {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 }

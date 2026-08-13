@@ -28,14 +28,19 @@ type Reaper struct {
 	batch       int
 	traceID     string
 	logger      *slog.Logger
+	observer    Observer
 	stop        context.CancelFunc
 }
 
-func NewReaper(repository Repository, coordinator Coordinator, grace, interval time.Duration, batch int, traceID string, logger *slog.Logger) (*Reaper, error) {
+func NewReaper(repository Repository, coordinator Coordinator, grace, interval time.Duration, batch int, traceID string, logger *slog.Logger, observers ...Observer) (*Reaper, error) {
 	if repository == nil || coordinator == nil || grace < 0 || interval <= 0 || batch < 1 || traceID == "" || logger == nil {
 		return nil, fmt.Errorf("attempt reaper dependencies and scan settings are required")
 	}
-	return &Reaper{repository: repository, coordinator: coordinator, grace: grace, interval: interval, batch: batch, traceID: traceID, logger: logger}, nil
+	var observer Observer
+	if len(observers) > 0 {
+		observer = observers[0]
+	}
+	return &Reaper{repository: repository, coordinator: coordinator, grace: grace, interval: interval, batch: batch, traceID: traceID, logger: logger, observer: observer}, nil
 }
 
 func (reaper *Reaper) Name() string { return "expired-attempt-reaper" }
@@ -63,10 +68,21 @@ func (reaper *Reaper) ScanOnce(ctx context.Context) error {
 		return err
 	}
 	for _, command := range values {
-		command.TraceID = reaper.traceID
-		_, err = reaper.coordinator.MarkExpiredLost(ctx, command)
+		if command.TraceID == "" {
+			command.TraceID = reaper.traceID
+		}
+		marked, markErr := reaper.coordinator.MarkExpiredLost(ctx, command)
+		err = markErr
 		if err != nil && !errors.Is(err, attempt.ErrStateConflict) && !errors.Is(err, attempt.ErrNotCurrent) && !errors.Is(err, attempt.ErrLeaseMismatch) {
 			return err
+		}
+		if marked {
+			if reaper.observer != nil {
+				reaper.observer.ObserveLeaseLost("reaper")
+			}
+			reaper.logger.Info("attempt lease marked lost", "component", reaper.Name(),
+				"project_id", command.ProjectID, "run_id", command.RunID,
+				"attempt_id", command.AttemptID, "trace_id", command.TraceID)
 		}
 	}
 	return nil

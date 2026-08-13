@@ -18,6 +18,11 @@ type repositoryStub struct {
 	calls int
 }
 
+func (stub *repositoryStub) GetDiagnosticView(_ context.Context, projectID, runID string) (DiagnosticView, error) {
+	view, err := stub.GetRunView(context.Background(), projectID, runID)
+	return DiagnosticView{Run: view}, err
+}
+
 func (stub *repositoryStub) GetRunView(_ context.Context, _, _ string) (RunView, error) {
 	stub.calls++
 	return stub.value, nil

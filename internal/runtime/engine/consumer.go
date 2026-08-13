@@ -19,6 +19,7 @@ type TransactionManager interface {
 
 type RunTransaction interface {
 	AcceptInbox(context.Context, string, eventing.RuntimeEvent) (bool, error)
+	AuthorityNow(context.Context) (time.Time, error)
 	LoadRun(context.Context, string, string) (runtime.WorkflowRunRecord, error)
 	LoadSnapshot(context.Context, string, string) (Snapshot, error)
 	LoadEngineState(context.Context, string, string) (State, error)
@@ -67,6 +68,21 @@ func (consumer Consumer) initialize(ctx context.Context, tx RunTransaction, even
 	if runRecord.State != runtime.RunPending {
 		return nil
 	}
+	now, err := tx.AuthorityNow(ctx)
+	if err != nil {
+		return err
+	}
+	// Cancellation is a durable authority fact. A replayed RunCreated must not
+	// initialize executable Nodes after the cancel request was committed but
+	// before its own wake-up reached this consumer.
+	if cancelWinsDeadline(runRecord) {
+		return consumer.advancePendingCancellation(ctx, tx, event, runRecord)
+	}
+	// A delayed RunCreated is only a wake-up. PostgreSQL time, rather than the
+	// message timestamp, decides whether its immutable Run has already expired.
+	if !now.Before(runRecord.DeadlineAt) {
+		return consumer.advancePendingDeadline(ctx, tx, event, runRecord, now)
+	}
 	snapshot, err := tx.LoadSnapshot(ctx, event.ProjectID, runRecord.Definition.SnapshotID)
 	if err != nil {
 		return err
@@ -103,6 +119,48 @@ func (consumer Consumer) initialize(ctx context.Context, tx RunTransaction, even
 	return tx.InitializeRun(ctx, runRecord, instance.SnapshotState(), event.OccurredAt)
 }
 
+func (consumer Consumer) advancePendingDeadline(ctx context.Context, tx RunTransaction, event eventing.RuntimeEvent, before runtime.WorkflowRunRecord, at time.Time) error {
+	run, err := runtime.RestoreWorkflowRun(before)
+	if err != nil {
+		return err
+	}
+	applied, err := run.RequestTermination(runtime.TerminationIntent{
+		Kind: runtime.TerminationTimedOut, RequestedAt: at,
+		Cause: runtime.Failure{Code: FailureRunTimedOut, Phase: "run_control", RunID: run.ID(), SnapshotID: run.Definition().SnapshotID, DefinitionHash: run.Definition().DefinitionHash, Message: "workflow deadline reached"},
+	})
+	if err != nil || !applied {
+		return err
+	}
+	if err = run.CompleteTermination(nil); err != nil {
+		return err
+	}
+	after := State{Run: run.Snapshot()}
+	return tx.AdvanceRun(ctx, State{Run: before}, after, at)
+}
+
+func (consumer Consumer) advancePendingCancellation(ctx context.Context, tx RunTransaction, event eventing.RuntimeEvent, before runtime.WorkflowRunRecord) error {
+	run, err := runtime.RestoreWorkflowRun(before)
+	if err != nil {
+		return err
+	}
+	requestedAt := before.CancelRequestedAt
+	if requestedAt.IsZero() {
+		requestedAt = event.OccurredAt
+	}
+	applied, err := run.RequestTermination(runtime.TerminationIntent{
+		Kind: runtime.TerminationCanceled, RequestedAt: requestedAt,
+		Cause: runtime.Failure{Code: FailureRunCanceled, Phase: "run_control", RunID: run.ID(), SnapshotID: run.Definition().SnapshotID, DefinitionHash: run.Definition().DefinitionHash, Message: "run cancellation requested"},
+	})
+	if err != nil || !applied {
+		return err
+	}
+	if err = run.CompleteTermination(nil); err != nil {
+		return err
+	}
+	after := State{Run: run.Snapshot()}
+	return tx.AdvanceRun(ctx, State{Run: before}, after, event.OccurredAt)
+}
+
 func (consumer Consumer) advance(ctx context.Context, tx RunTransaction, event eventing.RuntimeEvent) error {
 	before, err := tx.LoadEngineState(ctx, event.ProjectID, event.RunID)
 	if err != nil {
@@ -115,26 +173,20 @@ func (consumer Consumer) advance(ctx context.Context, tx RunTransaction, event e
 	// RunCreated initializes the graph. There are intentionally no Node Runs in
 	// that interval, so do not try to restore a complete Engine graph.
 	if before.Run.State == runtime.RunPending {
-		if event.EventType != eventing.RunCancelRequested {
+		now, nowErr := tx.AuthorityNow(ctx)
+		if nowErr != nil {
+			return nowErr
+		}
+		if cancelWinsDeadline(before.Run) {
+			return consumer.advancePendingCancellation(ctx, tx, event, before.Run)
+		}
+		if !now.Before(before.Run.DeadlineAt) {
+			return consumer.advancePendingDeadline(ctx, tx, event, before.Run, now)
+		}
+		if event.EventType != eventing.RunCancelRequested && before.Run.CancelRequestedAt.IsZero() {
 			return nil
 		}
-		run, restoreErr := runtime.RestoreWorkflowRun(before.Run)
-		if restoreErr != nil {
-			return restoreErr
-		}
-		applied, cancelErr := run.RequestTermination(runtime.TerminationIntent{
-			Kind: runtime.TerminationCanceled, RequestedAt: event.OccurredAt,
-			Cause: runtime.Failure{Code: FailureRunCanceled, Phase: "run_control", RunID: run.ID(), SnapshotID: run.Definition().SnapshotID, DefinitionHash: run.Definition().DefinitionHash, Message: "run cancellation requested"},
-		})
-		if cancelErr != nil || !applied {
-			return cancelErr
-		}
-		if completeErr := run.CompleteTermination(nil); completeErr != nil {
-			return completeErr
-		}
-		after := before
-		after.Run = run.Snapshot()
-		return tx.AdvanceRun(ctx, before, after, event.OccurredAt)
+		return consumer.advancePendingCancellation(ctx, tx, event, before.Run)
 	}
 	snapshot, err := tx.LoadSnapshot(ctx, event.ProjectID, before.Run.Definition.SnapshotID)
 	if err != nil {
@@ -143,6 +195,24 @@ func (consumer Consumer) advance(ctx context.Context, tx RunTransaction, event e
 	instance, err := RestoreBuiltinV1(snapshot, before)
 	if err != nil {
 		return err
+	}
+	now, err := tx.AuthorityNow(ctx)
+	if err != nil {
+		return err
+	}
+	// The durable cancellation timestamp and deadline are authority facts even
+	// when their Kafka wake-up is delayed. Completing a just-cancelled Attempt
+	// must never accidentally turn the Run into a business failure.
+	if before.Run.Termination == nil && cancelWinsDeadline(before.Run) {
+		if _, err = instance.RequestCancel(before.Run.CancelRequestedAt, "run cancellation requested"); err != nil {
+			return err
+		}
+		return tx.AdvanceRun(ctx, before, instance.SnapshotState(), now)
+	} else if before.Run.Termination == nil && !now.Before(before.Run.DeadlineAt) {
+		if _, err = instance.DeadlineReached(now); err != nil {
+			return err
+		}
+		return tx.AdvanceRun(ctx, before, instance.SnapshotState(), now)
 	}
 	switch event.EventType {
 	case eventing.AttemptCompleted, eventing.AttemptLost:
@@ -162,6 +232,14 @@ func (consumer Consumer) advance(ctx context.Context, tx RunTransaction, event e
 		return err
 	}
 	return tx.AdvanceRun(ctx, before, instance.SnapshotState(), event.OccurredAt)
+}
+
+// cancelWinsDeadline turns two durable source facts into the first terminal
+// intent. A cancel request issued before the immutable deadline must not be
+// overwritten merely because its Kafka wake-up was delayed past that deadline.
+// A request made after the deadline cannot revive the Run or block timeout.
+func cancelWinsDeadline(run runtime.WorkflowRunRecord) bool {
+	return !run.CancelRequestedAt.IsZero() && !run.CancelRequestedAt.After(run.DeadlineAt)
 }
 
 func attemptNodeID(state State, attemptID string) (dsl.NodeID, bool) {

@@ -20,16 +20,28 @@ type Scheduler struct {
 	clock     clock.Clock
 	owner     string
 	settings  Settings
+	observer  Observer
 }
 
-func New(authority Authority, store CoordinationStore, capacity CapacityProvider, ids identity.Generator, valueClock clock.Clock, owner string, settings Settings) (*Scheduler, error) {
+// Observer is intentionally a tiny bounded-label telemetry port. It avoids
+// coupling scheduling decisions to Prometheus or any other adapter.
+type Observer interface {
+	ObserveReadyToQueued(time.Duration)
+	ObserveSchedulingRedisRebuild(outcome string)
+}
+
+func New(authority Authority, store CoordinationStore, capacity CapacityProvider, ids identity.Generator, valueClock clock.Clock, owner string, settings Settings, observers ...Observer) (*Scheduler, error) {
 	if authority == nil || store == nil || capacity == nil || ids == nil || valueClock == nil || owner == "" {
 		return nil, fmt.Errorf("scheduler dependencies and owner are required")
 	}
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
-	return &Scheduler{authority: authority, store: store, capacity: capacity, ids: ids, clock: valueClock, owner: owner, settings: settings}, nil
+	var observer Observer
+	if len(observers) > 0 {
+		observer = observers[0]
+	}
+	return &Scheduler{authority: authority, store: store, capacity: capacity, ids: ids, clock: valueClock, owner: owner, settings: settings, observer: observer}, nil
 }
 
 func (scheduler *Scheduler) Rebalance(ctx context.Context) (Plan, error) {
@@ -94,7 +106,13 @@ func (scheduler *Scheduler) Rebalance(ctx context.Context) (Plan, error) {
 		}
 		return nil
 	}); err != nil {
+		if scheduler.observer != nil {
+			scheduler.observer.ObserveSchedulingRedisRebuild("failure")
+		}
 		return Plan{}, err
+	}
+	if scheduler.observer != nil {
+		scheduler.observer.ObserveSchedulingRedisRebuild("success")
 	}
 	if err = parallelLanes(ctx, len(plan.Lanes), scheduler.settings.AdmissionConcurrency, func(index int) error {
 		return scheduler.store.Activate(ctx, lease, plan.Lanes[index].Lane, plan.Epoch)
@@ -244,6 +262,9 @@ func (scheduler *Scheduler) dispatchReservation(ctx context.Context, reservation
 	})
 	if err != nil {
 		return Task{}, err
+	}
+	if scheduler.observer != nil {
+		scheduler.observer.ObserveReadyToQueued(scheduler.clock.Now().UTC().Sub(reservation.Candidate.ReadyAt))
 	}
 	if err = scheduler.store.ConfirmReservation(ctx, reservation, scheduler.settings.ReservationTTL); err != nil {
 		// The database already contains the authoritative queued Attempt. A

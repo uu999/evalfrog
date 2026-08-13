@@ -425,6 +425,7 @@ func (config Config) Validate() error {
 	minimumInboxRetention := config.Kafka.Topics.RuntimeEvent.Retention.Duration() + config.Kafka.MaxManualReplayWindow.Duration()
 	add(config.Outbox.InboxRetention.Duration() <= minimumInboxRetention, "outbox inbox_retention must exceed runtime event retention + manual replay window")
 	add(config.Outbox.Batch <= 0 || config.Outbox.PublishConcurrency <= 0 || config.Outbox.ScanBatch <= 0, "outbox batch and concurrency values must be positive")
+	add(config.Outbox.RetryTimerInterval.Duration() <= 0 || config.Outbox.DeadlineScannerInterval.Duration() <= 0 || config.Outbox.ReconcilerInterval.Duration() <= 0, "recovery timer, deadline scanner and reconciler intervals must be positive")
 	add(config.Cache.ExecutionSnapshotTTL.Duration() <= 0 || config.Cache.ActiveRunContextTTL.Duration() <= 0, "cache TTL values must be positive")
 	add(config.Migrations.Directory == "", "migrations.directory is required")
 	add(config.Migrations.LockTimeout.Duration() <= 0, "migrations.lock_timeout must be positive")

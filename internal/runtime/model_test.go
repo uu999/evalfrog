@@ -10,7 +10,7 @@ import (
 func TestRunTransitionMatrix(t *testing.T) {
 	states := []RunState{RunPending, RunRunning, RunSucceeded, RunFailed, RunCanceled, RunTimedOut}
 	allowed := map[[2]RunState]bool{
-		{RunPending, RunRunning}: true, {RunPending, RunCanceled}: true,
+		{RunPending, RunRunning}: true, {RunPending, RunCanceled}: true, {RunPending, RunTimedOut}: true,
 		{RunRunning, RunSucceeded}: true, {RunRunning, RunFailed}: true,
 		{RunRunning, RunCanceled}: true, {RunRunning, RunTimedOut}: true,
 	}
@@ -125,13 +125,22 @@ func TestFirstTerminationIntentWins(t *testing.T) {
 	}
 }
 
-func TestPendingRunRejectsFailureAndTimeoutIntent(t *testing.T) {
-	for _, kind := range []TerminationKind{TerminationFailed, TerminationTimedOut} {
-		run, _ := NewWorkflowRun(validRunCommand())
-		applied, err := run.RequestTermination(TerminationIntent{Kind: kind, RequestedAt: time.Now(), Cause: Failure{Code: "INVALID"}})
-		if err == nil || applied {
-			t.Fatalf("pending run accepted %s: applied=%v err=%v", kind, applied, err)
-		}
+func TestPendingRunOnlyAcceptsCancellationOrDeadlineTimeout(t *testing.T) {
+	run, _ := NewWorkflowRun(validRunCommand())
+	if applied, err := run.RequestTermination(TerminationIntent{Kind: TerminationFailed, RequestedAt: run.CreatedAt().Add(time.Second), Cause: Failure{Code: "INVALID"}}); err == nil || applied {
+		t.Fatalf("pending run accepted failure: applied=%v err=%v", applied, err)
+	}
+	if applied, err := run.RequestTermination(TerminationIntent{Kind: TerminationTimedOut, RequestedAt: run.DeadlineAt().Add(-time.Nanosecond), Cause: Failure{Code: "INVALID"}}); err == nil || applied {
+		t.Fatalf("pending run accepted early timeout: applied=%v err=%v", applied, err)
+	}
+	if applied, err := run.RequestTermination(TerminationIntent{Kind: TerminationTimedOut, RequestedAt: run.DeadlineAt(), Cause: Failure{Code: "RUN_TIMED_OUT"}}); err != nil || !applied {
+		t.Fatalf("pending run rejected deadline timeout: applied=%v err=%v", applied, err)
+	}
+	if err := run.CompleteTermination(nil); err != nil {
+		t.Fatal(err)
+	}
+	if restored, err := RestoreWorkflowRun(run.Snapshot()); err != nil || restored.State() != RunTimedOut {
+		t.Fatalf("uninitialized timed out run was not restorable: run=%+v err=%v", restored, err)
 	}
 }
 

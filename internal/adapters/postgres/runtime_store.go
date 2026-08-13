@@ -107,11 +107,11 @@ func (store *Store) CreatePendingRun(ctx context.Context, record runtime.CreateP
 		INSERT INTO workflow_runs (
 			run_id, project_id, workflow_id, snapshot_id, published_version_id,
 			execution_identity_id, purpose, definition_source, definition_hash,
-			state, state_version, input_json, deadline_at, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',1,$10,$11,$12,$12)`,
+			state, state_version, input_json, deadline_at, trace_id, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',1,$10,$11,$12,$13,$13)`,
 		record.RunID, record.ProjectID, record.WorkflowID, snapshotID, nullableVersion,
 		executionIdentityID, record.Purpose, definitionSource, definitionHash,
-		record.WorkflowInput, record.DeadlineAt, record.CreatedAt)
+		record.WorkflowInput, record.DeadlineAt, record.TraceID, record.CreatedAt)
 	if err != nil {
 		return runtime.WorkflowRunRecord{}, err
 	}
@@ -138,8 +138,8 @@ func (store *Store) CreatePendingRun(ctx context.Context, record runtime.CreateP
 			SnapshotID: snapshotID, DefinitionHash: definitionHash,
 			Source: runtime.DefinitionSource(definitionSource), PublishedVersionID: versionID,
 		},
-		WorkflowInput: append([]byte(nil), record.WorkflowInput...),
-		DeadlineAt:    record.DeadlineAt, CreatedAt: record.CreatedAt,
+		WorkflowInput: append([]byte(nil), record.WorkflowInput...), TraceID: record.TraceID,
+		DeadlineAt: record.DeadlineAt, CreatedAt: record.CreatedAt,
 		State: runtime.RunPending, StateVersion: 1,
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -197,6 +197,20 @@ func (store *Store) RequestCancellation(ctx context.Context, record runtime.Canc
 		OccurredAt: requestedAt, TraceID: record.TraceID,
 	}
 	if err = insertOutbox(ctx, tx, event); err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	// A cancellation is an operator-visible durable intent. Record only its
+	// identifiers and trace correlation; never copy user input or lease data
+	// into the audit stream.
+	auditID, err := uuid.NewV7()
+	if err != nil {
+		return runtime.WorkflowRunRecord{}, false, err
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO runtime_audit_events (
+			audit_id, project_id, run_id, action, actor_type, actor_id, trace_id, details_json, created_at
+		) VALUES ($1,$2,$3,'run.cancel_requested','principal',$4,$5,'{}'::jsonb,$6)`,
+		auditID.String(), record.ProjectID, record.RunID, record.PrincipalID, record.TraceID, requestedAt); err != nil {
 		return runtime.WorkflowRunRecord{}, false, err
 	}
 	result, err := loadRun(ctx, tx, record.ProjectID, record.RunID, false)
@@ -278,6 +292,99 @@ func (store *Store) GetRunView(ctx context.Context, projectID, runID string) (pr
 	return result, nil
 }
 
+// OldestUnpublishedOutboxAge is a PostgreSQL health fact across both durable
+// delivery boundaries. A zero duration means neither the Runtime nor Task
+// Outbox has unpublished records.
+func (store *Store) OldestUnpublishedOutboxAge(ctx context.Context) (time.Duration, error) {
+	var seconds float64
+	err := store.pool.QueryRow(ctx, `
+		SELECT COALESCE(EXTRACT(EPOCH FROM clock_timestamp() - MIN(created_at)), 0)
+		FROM (
+			SELECT created_at FROM outbox_events WHERE published_at IS NULL
+			UNION ALL
+			SELECT created_at FROM node_task_outbox WHERE published_at IS NULL
+		) AS unpublished`).Scan(&seconds)
+	if err != nil {
+		return 0, err
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func (store *Store) GetDiagnosticView(ctx context.Context, projectID, runID string) (projection.DiagnosticView, error) {
+	run, err := store.GetRunView(ctx, projectID, runID)
+	if err != nil {
+		return projection.DiagnosticView{}, err
+	}
+	result := projection.DiagnosticView{Run: run}
+	attemptRows, err := store.pool.Query(ctx, `
+		SELECT a.attempt_id::text, n.execution_node_id, a.attempt_seq, a.attempt_kind, a.state,
+		       a.lease_owner, a.lease_expires_at, a.error_json, a.created_at, a.updated_at
+		FROM node_attempts a
+		JOIN node_runs n ON n.project_id=a.project_id AND n.run_id=a.run_id AND n.node_run_id=a.node_run_id
+		WHERE a.project_id=$1 AND a.run_id=$2
+		ORDER BY n.execution_node_id, a.attempt_seq`, projectID, runID)
+	if err != nil {
+		return projection.DiagnosticView{}, err
+	}
+	defer attemptRows.Close()
+	for attemptRows.Next() {
+		var value projection.AttemptView
+		var errorJSON []byte
+		var leaseOwner *string
+		var leaseExpiresAt *time.Time
+		if err = attemptRows.Scan(&value.AttemptID, &value.ExecutionNodeID, &value.Sequence, &value.Kind, &value.State,
+			&leaseOwner, &leaseExpiresAt, &errorJSON, &value.CreatedAt, &value.UpdatedAt); err != nil {
+			return projection.DiagnosticView{}, err
+		}
+		if leaseOwner != nil {
+			value.LeaseOwner = *leaseOwner
+		}
+		value.LeaseExpiresAt = leaseExpiresAt
+		if len(errorJSON) != 0 {
+			var failure struct {
+				ErrorCode string `json:"error_code"`
+				DSLField  string `json:"dsl_field"`
+			}
+			if err = json.Unmarshal(errorJSON, &failure); err != nil {
+				return projection.DiagnosticView{}, err
+			}
+			value.ErrorCode, value.DSLField = failure.ErrorCode, failure.DSLField
+		}
+		result.Attempts = append(result.Attempts, value)
+	}
+	if err = attemptRows.Err(); err != nil {
+		return projection.DiagnosticView{}, err
+	}
+	auditRows, err := store.pool.Query(ctx, `
+		SELECT action, actor_type, actor_id, trace_id, details_json, created_at
+		FROM runtime_audit_events
+		WHERE project_id=$1 AND run_id=$2
+		ORDER BY created_at DESC, audit_id DESC
+		LIMIT 100`, projectID, runID)
+	if err != nil {
+		return projection.DiagnosticView{}, err
+	}
+	defer auditRows.Close()
+	for auditRows.Next() {
+		var value projection.AuditView
+		var details []byte
+		if err = auditRows.Scan(&value.Action, &value.ActorType, &value.ActorID, &value.TraceID, &details, &value.CreatedAt); err != nil {
+			return projection.DiagnosticView{}, err
+		}
+		if err = json.Unmarshal(details, &value.Details); err != nil {
+			return projection.DiagnosticView{}, err
+		}
+		result.Audit = append(result.Audit, value)
+	}
+	if err = auditRows.Err(); err != nil {
+		return projection.DiagnosticView{}, err
+	}
+	return result, nil
+}
+
 func commandName(purpose runtime.RunPurpose) string {
 	if purpose == runtime.RunPurposeTest {
 		return "test_draft"
@@ -317,6 +424,17 @@ func (transaction *runtimeTransaction) AcceptInbox(ctx context.Context, consumer
 		ON CONFLICT (consumer_name, event_id) DO NOTHING`,
 		event.ProjectID, event.RunID, consumer, event.EventID, event.EventType)
 	return tag.RowsAffected() == 1, err
+}
+
+// AuthorityNow makes time-based semantic decisions replica-safe. Recovery
+// messages can be delayed or reordered, so Engine must not treat their
+// historical OccurredAt as the present deadline clock.
+func (transaction *runtimeTransaction) AuthorityNow(ctx context.Context) (time.Time, error) {
+	var now time.Time
+	if err := transaction.tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return time.Time{}, err
+	}
+	return now.UTC(), nil
 }
 
 func (transaction *runtimeTransaction) LoadRun(ctx context.Context, projectID, runID string) (runtime.WorkflowRunRecord, error) {
@@ -584,7 +702,7 @@ func loadRun(ctx context.Context, queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, projectID, runID string, forUpdate bool) (runtime.WorkflowRunRecord, error) {
 	query := `
-		SELECT run_id::text, project_id::text, workflow_id::text, purpose,
+		SELECT run_id::text, project_id::text, workflow_id::text, trace_id, purpose,
 		       snapshot_id::text, definition_hash, definition_source,
 		       published_version_id::text, input_json, workflow_output_json,
 		       deadline_at, created_at, state, state_version,
@@ -599,7 +717,7 @@ func loadRun(ctx context.Context, queryer interface {
 	var source runtime.DefinitionSource
 	var output, nodeIDs, termination []byte
 	err := queryer.QueryRow(ctx, query, projectID, runID).Scan(
-		&result.ID, &result.ProjectID, &result.WorkflowID, &result.Purpose,
+		&result.ID, &result.ProjectID, &result.WorkflowID, &result.TraceID, &result.Purpose,
 		&result.Definition.SnapshotID, &result.Definition.DefinitionHash, &source,
 		&versionID, &result.WorkflowInput, &output, &result.DeadlineAt, &result.CreatedAt,
 		&result.State, &result.StateVersion, &nodeIDs, &termination, &cancelRequestedAt)
@@ -634,7 +752,7 @@ func insertOutbox(ctx context.Context, tx pgx.Tx, event eventing.RuntimeEvent) e
 		INSERT INTO outbox_events (
 			event_id, project_id, run_id, aggregate_type, aggregate_id,
 			event_type, message_version, occurred_at, trace_id, available_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$8)`, event.EventID, event.ProjectID,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp())`, event.EventID, event.ProjectID,
 		event.RunID, event.AggregateType, event.AggregateID, event.EventType,
 		event.MessageVersion, event.OccurredAt, event.TraceID)
 	return err

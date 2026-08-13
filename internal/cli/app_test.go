@@ -72,3 +72,35 @@ func TestConfigValidate(t *testing.T) {
 		t.Fatalf("code=%d output=%q", code, output.String())
 	}
 }
+
+func TestRunDiagnosticsAndReplayUseControlledExternalPaths(t *testing.T) {
+	t.Parallel()
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.Method+" "+request.URL.Path)
+		if request.Header.Get("Authorization") != "Bearer token-value" {
+			t.Fatalf("authorization=%q", request.Header.Get("Authorization"))
+		}
+		if request.URL.Path == "/v1/projects/project-id/runs/run-id/replay" {
+			var body map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["event_type"] != "attempt.lost" || body["aggregate_id"] != "attempt-id" {
+				t.Fatalf("replay body=%v err=%v", body, err)
+			}
+		}
+		_, _ = writer.Write([]byte(`{"accepted":true}`))
+	}))
+	defer server.Close()
+	args := []string{"--server", server.URL, "--token", "token-value", "--project", "project-id"}
+	for _, command := range [][]string{
+		append([]string{"run", "diagnose", "--run", "run-id"}, args...),
+		append([]string{"run", "replay", "--run", "run-id", "--event-type", "attempt.lost", "--aggregate-id", "attempt-id"}, args...),
+	} {
+		var output bytes.Buffer
+		if code := (App{Output: &output, Error: &output, Home: t.TempDir()}).Run(context.Background(), command); code != 0 {
+			t.Fatalf("command=%v code=%d output=%q", command, code, output.String())
+		}
+	}
+	if strings.Join(paths, ",") != "GET /v1/projects/project-id/runs/run-id/diagnostics,POST /v1/projects/project-id/runs/run-id/replay" {
+		t.Fatalf("paths=%v", paths)
+	}
+}

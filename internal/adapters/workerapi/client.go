@@ -68,7 +68,7 @@ func (client *Client) Claim(ctx context.Context, command attempt.ClaimCommand) (
 	if err := client.post(ctx, "/internal/v1/attempts/"+command.AttemptID+"/claim", body, &response); err != nil {
 		return attempt.Lease{}, err
 	}
-	return attempt.Lease{Token: response.LeaseToken, Owner: response.Owner, FencingToken: response.FencingToken, ExpiresAt: response.ExpiresAt}, nil
+	return attempt.Lease{Token: response.LeaseToken, Owner: response.Owner, FencingToken: response.FencingToken, ExpiresAt: response.ExpiresAt, CancelRequested: response.CancelRequested}, nil
 }
 
 func (client *Client) Heartbeat(ctx context.Context, command attempt.HeartbeatCommand) (attempt.Lease, error) {
@@ -79,7 +79,7 @@ func (client *Client) Heartbeat(ctx context.Context, command attempt.HeartbeatCo
 	if err := client.post(ctx, "/internal/v1/attempts/"+command.AttemptID+"/heartbeat", body, &response); err != nil {
 		return attempt.Lease{}, err
 	}
-	return attempt.Lease{Token: response.LeaseToken, Owner: response.Owner, FencingToken: response.FencingToken, ExpiresAt: response.ExpiresAt}, nil
+	return attempt.Lease{Token: response.LeaseToken, Owner: response.Owner, FencingToken: response.FencingToken, ExpiresAt: response.ExpiresAt, CancelRequested: response.CancelRequested}, nil
 }
 
 func (client *Client) Complete(ctx context.Context, command attempt.CompleteCommand) (bool, error) {

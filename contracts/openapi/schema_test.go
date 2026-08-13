@@ -18,7 +18,7 @@ func TestM10ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths, ok := document["paths"].(map[string]any)
-	if !ok || len(paths) != 14 {
+	if !ok || len(paths) != 16 {
 		t.Fatalf("unexpected path contract: %#v", document["paths"])
 	}
 	for path := range paths {
@@ -34,8 +34,10 @@ func TestM10ExternalContractHasNoExecutableArtifactUpload(t *testing.T) {
 		"/v1/projects/{project_id}/workflows/{workflow_id}/draft/test",
 		"/v1/projects/{project_id}/workflows/{workflow_id}/runs",
 		"/v1/projects/{project_id}/runs/{run_id}",
+		"/v1/projects/{project_id}/runs/{run_id}/diagnostics",
 		"/v1/projects/{project_id}/runs/{run_id}/events",
 		"/v1/projects/{project_id}/runs/{run_id}/cancel",
+		"/v1/projects/{project_id}/runs/{run_id}/replay",
 		"/v1/node-types",
 		"/v1/projects/{project_id}/connections",
 	} {

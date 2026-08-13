@@ -31,6 +31,38 @@ type NodeView struct {
 	Location        *FailureLocation  `json:"location,omitempty"`
 }
 
+// AttemptView is diagnostic metadata, not an execution command surface. It
+// intentionally excludes lease tokens, workflow inputs/outputs and raw
+// executor logs so the read model remains safe for ordinary Run readers.
+type AttemptView struct {
+	AttemptID       string               `json:"attempt_id"`
+	ExecutionNodeID string               `json:"execution_node_id"`
+	Sequence        uint32               `json:"sequence"`
+	Kind            runtime.RetryKind    `json:"kind"`
+	State           runtime.AttemptState `json:"state"`
+	LeaseOwner      string               `json:"lease_owner,omitempty"`
+	LeaseExpiresAt  *time.Time           `json:"lease_expires_at,omitempty"`
+	ErrorCode       string               `json:"error_code,omitempty"`
+	DSLField        string               `json:"dsl_field,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+}
+
+type AuditView struct {
+	Action    string         `json:"action"`
+	ActorType string         `json:"actor_type"`
+	ActorID   string         `json:"actor_id"`
+	TraceID   string         `json:"trace_id"`
+	Details   map[string]any `json:"details"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+type DiagnosticView struct {
+	Run      RunView       `json:"run"`
+	Attempts []AttemptView `json:"attempts"`
+	Audit    []AuditView   `json:"audit"`
+}
+
 type RunView struct {
 	RunID           string             `json:"run_id"`
 	ProjectID       string             `json:"project_id"`
@@ -51,6 +83,7 @@ type RunView struct {
 
 type Repository interface {
 	GetRunView(context.Context, string, string) (RunView, error)
+	GetDiagnosticView(context.Context, string, string) (DiagnosticView, error)
 }
 
 type AccessControl interface {
@@ -85,6 +118,16 @@ func (service Service) GetRun(ctx context.Context, projectID, principalID, runID
 		return RunView{}, runtime.ErrRunNotFound
 	}
 	return service.repository.GetRunView(ctx, projectID, runID)
+}
+
+func (service Service) GetDiagnostics(ctx context.Context, projectID, principalID, runID string) (DiagnosticView, error) {
+	if err := service.access.Require(ctx, projectID, principalID, access.PermissionRunRead); err != nil {
+		return DiagnosticView{}, err
+	}
+	if projectID == "" || runID == "" {
+		return DiagnosticView{}, runtime.ErrRunNotFound
+	}
+	return service.repository.GetDiagnosticView(ctx, projectID, runID)
 }
 
 func LocateFailure(document sourcemap.Document, failure *runtime.Failure) *FailureLocation {

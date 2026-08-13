@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M0-M10 已完成：Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel 与 Source Map 错误回映**。这代表 Product Core Loop Ready，不代表 M11/M12 的故障、容量和发布门槛已经完成。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M0-M11 已完成：Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel、Source Map 错误回映，以及可恢复的 Runtime 观测与故障恢复闭环**。这代表 Product Core Loop Ready，不代表 M12 的容量、安全和发布门槛已经完成。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -387,7 +387,7 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0-M10 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor、Python Per-Attempt Sandbox，以及完整 External Run API、Agent CLI 与 Human Web 闭环。当前可称为 Product Core Loop Ready；M11/M12 的故障、容量与发布门槛仍未完成。
+M0-M11 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor、Python Per-Attempt Sandbox、External Run API、Agent CLI/Human Web 闭环，以及 Retry/Recovery/可观测性与故障恢复闭环。当前可称为 Product Core Loop Ready；M12 的容量、安全与发布门槛仍未完成。
 
 ### M10 Product Core Loop
 
@@ -396,6 +396,14 @@ M0-M10 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、
 - `web/` 提供独立静态 Canvas：加载 Draft、编辑 IR Node/Edge/Input、拖拽布局、保存/校验/测试/发布/正式运行/取消；
 - Run 状态由 PostgreSQL 投影，Cache Redis 只做 Cache-Aside；SSE/PubSub 只传“重新读取”通知，断线或丢消息后重新 GET Run 即恢复；
 - Runtime Failure 通过不可变 Snapshot 的 Source Map 回到 IR Node、Edge 和字段路径。
+
+### M11 Recovery and Observability
+
+- Retry Timer、Deadline Scanner、Attempt Reaper 与 Reconciler 都只重发经 PostgreSQL 当前事实确认的 Runtime wake-up；Engine 仍是唯一语义状态推进者；
+- Deadline/Cancel/Retry/Lost 的竞争以 PostgreSQL 时间和持久化终止意图收敛，过期或取消中的 Run 不会被延迟 Kafka 消息重新激活；
+- Run 根 `trace_id` 贯穿 Runtime Outbox、Task Outbox、Worker Completion、Recovery 与 Engine；Metrics 使用有界标签，日志/Audit 不含输入、输出、Secret、Lease Token 或 stderr；
+- `GET /runs/{run_id}/diagnostics` 和 CLI `run diagnose` 提供安全诊断；Project Admin 可用 CLI `run replay` 请求重新检查一个当前 actionable 的 Runtime 事实，不能注入任意 Kafka Payload；
+- 运行与告警操作见 [故障恢复与 DLQ 运行手册](./docs/operations/故障恢复与DLQ运行手册.md)。
 ## M8-M9 Runtime Status
 
 M8 is implemented: Builtin Worker executes managed HTTP/RPC nodes with Connection-relative paths, Service Catalog operation binding, runtime identity checks, Secret Resolver Port, stable idempotency keys, and Attempt Resource Revision audit.

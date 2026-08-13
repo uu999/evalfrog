@@ -37,12 +37,22 @@ func TestM6MigrationUpgradesExistingM5RuntimeRows(t *testing.T) {
 	workflow, snapshot := harness.createCodeWorkflow(t, false)
 	run := harness.createTestRun(t, workflow.ID, snapshot.ID, "m6-upgrade")
 	seedM5RuntimeNodes(t, harness, run, snapshot)
+	// Current Run creation persists trace correlation. The fixture starts from
+	// M5, so temporarily add the future column to create the historical row,
+	// then remove it before exercising the real append-only upgrade. M11 must
+	// recreate it from the pre-existing RunCreated Outbox event.
+	mustExec(t, harness.ctx, harness.client.Pool(), `ALTER TABLE workflow_runs DROP COLUMN trace_id`)
 
 	runner := migrations.Runner{Pool: harness.client.Pool(), Schema: harness.schema,
 		Directory: filepath.Join(root, "migrations"), LockTimeout: 5 * time.Second}
 	if err := runner.Up(harness.ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The fixture begins at M5 specifically to prove M6 can populate the
+	// durable scheduling fields for historical rows. Once the M11 migration is
+	// applied, current Store code legitimately reads the new Run trace column;
+	// keep that current-code assertion after the full upgrade, not against an
+	// intentionally historical schema.
 	rows, err := harness.client.Pool().Query(harness.ctx, `
 		SELECT kind, operation_type, operation_version, resource_class
 		FROM node_runs WHERE project_id=$1 AND run_id=$2 ORDER BY execution_node_id`, harness.projectID, run.ID)
@@ -338,6 +348,45 @@ func TestM6ConcurrentRedisAdmissionCannotExceedGrantedWindow(t *testing.T) {
 	}
 }
 
+func TestM6RedisReservationRetryIsIdempotent(t *testing.T) {
+	harness := newM5Harness(t)
+	configuration := localM6Config(t)
+	configuration.Redis.Scheduling.KeyPrefix = "evalfrog:local:m6-reservation-retry:" + uuid.NewString() + ":"
+	store := schedulingredis.Open(configuration.Redis.Scheduling)
+	defer store.Close()
+	lease, err := store.AcquireBalancerLease(harness.ctx, "retry-balancer", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := newID(t)
+	lane, _ := scheduling.LaneFor(projectID, configuration.Scheduler.LaneCount)
+	candidate := scheduling.Candidate{ProjectID: projectID, RunID: newID(t), NodeRunID: newID(t), ExecutionNodeID: "xn_retry", StateVersion: 1, ReadyAt: time.Now().UTC(), ResourceClass: scheduling.ResourceBuiltin}
+	if err = store.PauseAdmissions(harness.ctx, lease, lane); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RebuildLane(harness.ctx, lease, scheduling.LaneState{Lane: lane, Candidates: []scheduling.Candidate{candidate}}, time.Second, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Grant(harness.ctx, lease, lane, []scheduling.PlannedAdmission{{ProjectID: projectID, ResourceClass: scheduling.ResourceBuiltin}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Activate(harness.ctx, lease, lane, lease.FencingToken); err != nil {
+		t.Fatal(err)
+	}
+	attemptID := newID(t)
+	first, exists, err := store.ReserveNext(harness.ctx, lane, attemptID, time.Minute)
+	if err != nil || !exists {
+		t.Fatalf("first reservation=%+v exists=%t err=%v", first, exists, err)
+	}
+	second, exists, err := store.ReserveNext(harness.ctx, lane, attemptID, time.Minute)
+	if err != nil || !exists || second.AttemptID != first.AttemptID || second.Candidate.NodeRunID != candidate.NodeRunID {
+		t.Fatalf("retry reservation=%+v exists=%t err=%v", second, exists, err)
+	}
+	if _, exists, err = store.ReserveNext(harness.ctx, lane, newID(t), time.Minute); err != nil || exists {
+		t.Fatalf("duplicate reservation consumed another credit exists=%t err=%v", exists, err)
+	}
+}
+
 func TestM6IndexesServeSchedulingAccessPaths(t *testing.T) {
 	harness := newM5Harness(t)
 	queries := map[string]string{
@@ -462,6 +511,14 @@ func newM5OnlyHarness(t *testing.T) (*m5Harness, string) {
 	runner := migrations.Runner{Pool: client.Pool(), Schema: configuration.Postgres.Schema,
 		Directory: previousDirectory, LockTimeout: 5 * time.Second}
 	if err = runner.Up(ctx); err != nil {
+		client.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	// Runtime code at the current revision writes trace_id. This compatibility
+	// column lets the fixture create M5-shaped rows before the test explicitly
+	// removes it and upgrades from M5 through the current migration set.
+	if _, err = client.Pool().Exec(ctx, `ALTER TABLE workflow_runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT 'm5-compatibility'`); err != nil {
 		client.Close()
 		cancel()
 		t.Fatal(err)

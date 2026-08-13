@@ -31,7 +31,7 @@ redis:
     password: ""
     db: 0
     key_prefix: "evalfrog:production-default:sched:"
-    operation_timeout: 200ms
+    operation_timeout: 500ms
     max_retries: 1
     eviction_policy: "noeviction"
   cache:

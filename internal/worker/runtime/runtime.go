@@ -200,13 +200,21 @@ func (worker *Runtime) receiveAndExecute(ctx context.Context) error {
 	}
 	worker.deliveryMu.Unlock()
 	locked = false
+	// Claim acknowledges the durable responsibility transfer. If a cancellation
+	// or deadline was observed while Claim acquired the lease, settle a safe
+	// canceled Attempt immediately and never expose execution context or invoke
+	// user code.
+	if lease.CancelRequested {
+		return worker.complete(ctx, task, lease, platformruntime.AttemptResult{State: platformruntime.AttemptCanceled, ErrorCode: "RUN_TERMINATING", Message: "run cancellation or deadline was requested before execution"})
+	}
 	executionContext, err := worker.attempts.Load(ctx, runtimecontext.LoadCommand{ProjectID: task.ProjectID, RunID: task.RunID, AttemptID: task.AttemptID, AttemptSequence: task.AttemptSequence, LeaseToken: lease.Token, FencingToken: lease.FencingToken})
 	if err != nil {
 		// Context assembly is infrastructure work. It must not turn into a node
 		// failure or consume the workflow's business retry budget. Keep the
 		// claimed attempt Running; the lease reaper will fence it as Lost and
 		// drive an infrastructure recovery attempt.
-		worker.logger.Warn("execution context unavailable; deferred to lease recovery", "attempt_id", task.AttemptID, "error", err)
+		worker.logger.Warn("execution context unavailable; deferred to lease recovery", "component", worker.Name(),
+			"project_id", task.ProjectID, "run_id", task.RunID, "attempt_id", task.AttemptID, "trace_id", task.TraceID, "error", err)
 		return nil
 	}
 	executor, exists := worker.catalog.values[executionContext.Operation.Coordinate()]
@@ -221,13 +229,20 @@ func (worker *Runtime) receiveAndExecute(ctx context.Context) error {
 	defer cancelExec()
 	heartbeatStopped := make(chan struct{})
 	heartbeatFailed := make(chan error, 1)
-	go worker.heartbeat(execCtx, task, lease, heartbeatStopped, heartbeatFailed, cancelExec)
+	cancelRequested := make(chan struct{})
+	go worker.heartbeat(execCtx, task, lease, heartbeatStopped, heartbeatFailed, cancelRequested, cancelExec)
 	result := executor.Execute(execCtx, executionContext)
 	close(heartbeatStopped)
 	select {
 	case heartbeatErr := <-heartbeatFailed:
-		worker.logger.Warn("attempt heartbeat failed; stale result discarded", "attempt_id", task.AttemptID, "error", heartbeatErr)
+		worker.logger.Warn("attempt heartbeat failed; stale result discarded", "component", worker.Name(),
+			"project_id", task.ProjectID, "run_id", task.RunID, "attempt_id", task.AttemptID, "trace_id", task.TraceID, "error", heartbeatErr)
 		return nil
+	default:
+	}
+	select {
+	case <-cancelRequested:
+		result = platformruntime.AttemptResult{State: platformruntime.AttemptCanceled, ErrorCode: "RUN_TERMINATING", Message: "run cancellation or deadline was requested during execution"}
 	default:
 	}
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) && !result.State.Terminal() {
@@ -237,7 +252,8 @@ func (worker *Runtime) receiveAndExecute(ctx context.Context) error {
 		result = platformruntime.AttemptResult{State: platformruntime.AttemptFailed, ErrorCode: "EXECUTOR_PROTOCOL_ERROR", Message: "executor returned a non-terminal result"}
 	}
 	if err = worker.complete(ctx, task, lease, result); err != nil {
-		worker.logger.Warn("attempt completion deferred to lease recovery", "attempt_id", task.AttemptID, "error", err)
+		worker.logger.Warn("attempt completion deferred to lease recovery", "component", worker.Name(),
+			"project_id", task.ProjectID, "run_id", task.RunID, "attempt_id", task.AttemptID, "trace_id", task.TraceID, "error", err)
 	}
 	return nil
 }
@@ -263,12 +279,13 @@ func (worker *Runtime) settlePoison(ctx context.Context, delivery eventing.Deliv
 		return err
 	}
 	if err = worker.completeFailure(ctx, task, lease, "TASK_MESSAGE_INVALID", contractErr.Error()); err != nil {
-		worker.logger.Warn("poison task completion deferred to lease recovery", "attempt_id", task.AttemptID, "error", err)
+		worker.logger.Warn("poison task completion deferred to lease recovery", "component", worker.Name(),
+			"project_id", task.ProjectID, "run_id", task.RunID, "attempt_id", task.AttemptID, "trace_id", task.TraceID, "error", err)
 	}
 	return nil
 }
 
-func (worker *Runtime) heartbeat(ctx context.Context, task eventing.TaskMessage, lease attempt.Lease, stopped <-chan struct{}, failed chan<- error, cancel context.CancelFunc) {
+func (worker *Runtime) heartbeat(ctx context.Context, task eventing.TaskMessage, lease attempt.Lease, stopped <-chan struct{}, failed chan<- error, cancellation chan<- struct{}, cancel context.CancelFunc) {
 	ticker := time.NewTicker(worker.settings.HeartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -278,9 +295,14 @@ func (worker *Runtime) heartbeat(ctx context.Context, task eventing.TaskMessage,
 		case <-stopped:
 			return
 		case <-ticker.C:
-			_, err := worker.attempts.Heartbeat(ctx, attempt.HeartbeatCommand{ProjectID: task.ProjectID, RunID: task.RunID, AttemptID: task.AttemptID, AttemptSequence: task.AttemptSequence, LeaseToken: lease.Token, FencingToken: lease.FencingToken, ExtendBy: worker.settings.LeaseDuration})
+			updated, err := worker.attempts.Heartbeat(ctx, attempt.HeartbeatCommand{ProjectID: task.ProjectID, RunID: task.RunID, AttemptID: task.AttemptID, AttemptSequence: task.AttemptSequence, LeaseToken: lease.Token, FencingToken: lease.FencingToken, ExtendBy: worker.settings.LeaseDuration})
 			if err != nil {
 				failed <- err
+				cancel()
+				return
+			}
+			if updated.CancelRequested {
+				close(cancellation)
 				cancel()
 				return
 			}

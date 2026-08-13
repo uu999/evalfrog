@@ -347,7 +347,7 @@ func (app App) publish(ctx context.Context, arguments []string) int {
 
 func (app App) run(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(app.Error, "usage: evalfrog run <test|create|status|cancel> ...")
+		fmt.Fprintln(app.Error, "usage: evalfrog run <test|create|status|diagnose|cancel|replay> ...")
 		return 2
 	}
 	switch arguments[0] {
@@ -406,8 +406,8 @@ func (app App) run(ctx context.Context, arguments []string) int {
 		}
 		fmt.Fprintf(app.Output, "run created: %s state=%s\n", response.RunID, response.State)
 		return 0
-	case "status":
-		flags := flag.NewFlagSet("run status", flag.ContinueOnError)
+	case "status", "diagnose":
+		flags := flag.NewFlagSet("run "+arguments[0], flag.ContinueOnError)
 		flags.SetOutput(app.Error)
 		common := app.common(flags, true)
 		runID := flags.String("run", "", "run UUID")
@@ -422,7 +422,11 @@ func (app App) run(ctx context.Context, arguments []string) int {
 			return 2
 		}
 		var response any
-		err := client.request(ctx, http.MethodGet, "/v1/projects/"+common.project+"/runs/"+*runID, "", nil, &response)
+		path := "/v1/projects/" + common.project + "/runs/" + *runID
+		if arguments[0] == "diagnose" {
+			path += "/diagnostics"
+		}
+		err := client.request(ctx, http.MethodGet, path, "", nil, &response)
 		if app.reportAPIError(err) {
 			return 1
 		}
@@ -452,8 +456,35 @@ func (app App) run(ctx context.Context, arguments []string) int {
 		encoded, _ := json.Marshal(response)
 		fmt.Fprintln(app.Output, string(encoded))
 		return 0
+	case "replay":
+		flags := flag.NewFlagSet("run replay", flag.ContinueOnError)
+		flags.SetOutput(app.Error)
+		common := app.common(flags, true)
+		runID := flags.String("run", "", "run UUID")
+		eventType := flags.String("event-type", "", "current runtime event type")
+		aggregateID := flags.String("aggregate-id", "", "run or attempt UUID")
+		if flags.Parse(arguments[1:]) != nil {
+			return 2
+		}
+		client, ok := app.api(common)
+		if !ok || *runID == "" || *eventType == "" || *aggregateID == "" {
+			if ok {
+				fmt.Fprintln(app.Error, "--run, --event-type and --aggregate-id are required")
+			}
+			return 2
+		}
+		var response any
+		err := client.request(ctx, http.MethodPost, "/v1/projects/"+common.project+"/runs/"+*runID+"/replay", "", map[string]string{
+			"event_type": *eventType, "aggregate_id": *aggregateID,
+		}, &response)
+		if app.reportAPIError(err) {
+			return 1
+		}
+		encoded, _ := json.Marshal(response)
+		fmt.Fprintln(app.Output, string(encoded))
+		return 0
 	default:
-		fmt.Fprintln(app.Error, "usage: evalfrog run <test|create|status|cancel> ...")
+		fmt.Fprintln(app.Error, "usage: evalfrog run <test|create|status|diagnose|cancel|replay> ...")
 		return 2
 	}
 }

@@ -216,8 +216,15 @@ func (run *WorkflowRun) RequestTermination(intent TerminationIntent) (bool, erro
 	default:
 		return false, fmt.Errorf("termination kind %q is invalid", intent.Kind)
 	}
-	if run.state == RunPending && intent.Kind != TerminationCanceled {
-		return false, fmt.Errorf("pending run only accepts cancellation")
+	// A Run may be created durably but wait behind a delayed/reordered
+	// RunCreated event. Cancellation and the immutable workflow deadline are
+	// both meaningful before Node Runs are initialized; a business failure is
+	// not, because no Node has executed yet.
+	if run.state == RunPending && intent.Kind == TerminationFailed {
+		return false, fmt.Errorf("pending run only accepts cancellation or deadline timeout")
+	}
+	if run.state == RunPending && intent.Kind == TerminationTimedOut && intent.RequestedAt.Before(run.deadlineAt) {
+		return false, fmt.Errorf("pending run timeout cannot predate its deadline")
 	}
 	if run.termination != nil {
 		return false, nil
@@ -672,7 +679,7 @@ func CompleteWorkflowSuccess(run *WorkflowRun, end *NodeRun, nodes []*NodeRun, o
 
 func (run *WorkflowRun) validateNodeSet(nodes []*NodeRun) error {
 	expected := run.nodeRunCount
-	if run.state == RunPending && run.termination != nil && run.termination.Kind == TerminationCanceled {
+	if run.state == RunPending && run.termination != nil && (run.termination.Kind == TerminationCanceled || run.termination.Kind == TerminationTimedOut) {
 		expected = 0
 	}
 	if uint32(len(nodes)) != expected {

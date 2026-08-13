@@ -24,10 +24,11 @@ var (
 )
 
 type Lease struct {
-	Token        string
-	Owner        string
-	FencingToken uint64
-	ExpiresAt    time.Time
+	Token           string
+	Owner           string
+	FencingToken    uint64
+	ExpiresAt       time.Time
+	CancelRequested bool
 }
 
 type ClaimCommand struct {

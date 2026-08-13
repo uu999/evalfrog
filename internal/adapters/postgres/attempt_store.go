@@ -32,7 +32,7 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 	var existingToken, existingOwner *string
 	var existingFencing uint64
 	var existingExpiry *time.Time
-	var existingLeaseValid bool
+	var existingLeaseValid, cancelRequested bool
 	var operation dsl.Coordinate
 	var resourceClass scheduling.ResourceClass
 	err = tx.QueryRow(ctx, `
@@ -47,10 +47,12 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 	}
 	// Keep the same Node -> Attempt row-lock order used by Engine state restore.
 	err = tx.QueryRow(ctx, `
-		SELECT state, current_attempt_id::text, operation_type, operation_version, resource_class FROM node_runs
-		WHERE project_id=$1 AND run_id=$2 AND node_run_id=$3
+		SELECT n.state, n.current_attempt_id::text, n.operation_type, n.operation_version, n.resource_class,
+		       r.cancel_requested_at IS NOT NULL OR r.termination_intent_json IS NOT NULL OR r.deadline_at <= clock_timestamp()
+		FROM node_runs n JOIN workflow_runs r ON r.project_id=n.project_id AND r.run_id=n.run_id
+		WHERE n.project_id=$1 AND n.run_id=$2 AND n.node_run_id=$3
 		FOR UPDATE`, record.ProjectID, record.RunID, nodeRunID).
-		Scan(&nodeState, &currentAttemptID, &operation.Type, &operation.Version, &resourceClass)
+		Scan(&nodeState, &currentAttemptID, &operation.Type, &operation.Version, &resourceClass, &cancelRequested)
 	if err != nil {
 		return attempt.Lease{}, err
 	}
@@ -77,7 +79,7 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 			if err = tx.Commit(ctx); err != nil {
 				return attempt.Lease{}, err
 			}
-			return attempt.Lease{Token: *existingToken, Owner: *existingOwner, FencingToken: existingFencing, ExpiresAt: *existingExpiry}, nil
+			return attempt.Lease{Token: *existingToken, Owner: *existingOwner, FencingToken: existingFencing, ExpiresAt: *existingExpiry, CancelRequested: cancelRequested}, nil
 		}
 		return attempt.Lease{}, attempt.ErrStateConflict
 	}
@@ -116,7 +118,7 @@ func (store *Store) Claim(ctx context.Context, record attempt.ClaimRecord) (atte
 	if err = tx.Commit(ctx); err != nil {
 		return attempt.Lease{}, err
 	}
-	return attempt.Lease{Token: record.LeaseToken, Owner: record.WorkerID, FencingToken: fencing, ExpiresAt: expiresAt}, nil
+	return attempt.Lease{Token: record.LeaseToken, Owner: record.WorkerID, FencingToken: fencing, ExpiresAt: expiresAt, CancelRequested: cancelRequested}, nil
 }
 
 func containsCapability(capabilities []dsl.Coordinate, required dsl.Coordinate) bool {
@@ -131,6 +133,7 @@ func containsCapability(capabilities []dsl.Coordinate, required dsl.Coordinate) 
 func (store *Store) Heartbeat(ctx context.Context, record attempt.HeartbeatRecord) (attempt.Lease, error) {
 	var owner string
 	var expiresAt time.Time
+	var cancelRequested bool
 	err := store.pool.QueryRow(ctx, `
 		UPDATE node_attempts SET
 		       lease_expires_at=clock_timestamp()+($1 * interval '1 millisecond'),
@@ -138,13 +141,14 @@ func (store *Store) Heartbeat(ctx context.Context, record attempt.HeartbeatRecor
 		WHERE project_id=$2 AND run_id=$3 AND attempt_id=$4 AND attempt_seq=$5
 		  AND state='running' AND lease_token=$6 AND fencing_token=$7
 		  AND lease_expires_at >= clock_timestamp()
-		RETURNING lease_owner, lease_expires_at`, record.ExtendBy.Milliseconds(),
+		RETURNING lease_owner, lease_expires_at,
+		  EXISTS(SELECT 1 FROM workflow_runs r WHERE r.project_id=node_attempts.project_id AND r.run_id=node_attempts.run_id AND (r.cancel_requested_at IS NOT NULL OR r.termination_intent_json IS NOT NULL OR r.deadline_at <= clock_timestamp()))`, record.ExtendBy.Milliseconds(),
 		record.ProjectID, record.RunID, record.AttemptID, record.AttemptSequence,
-		record.LeaseToken, record.FencingToken).Scan(&owner, &expiresAt)
+		record.LeaseToken, record.FencingToken).Scan(&owner, &expiresAt, &cancelRequested)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return attempt.Lease{}, attempt.ErrLeaseMismatch
 	}
-	return attempt.Lease{Token: record.LeaseToken, Owner: owner, FencingToken: record.FencingToken, ExpiresAt: expiresAt}, err
+	return attempt.Lease{Token: record.LeaseToken, Owner: owner, FencingToken: record.FencingToken, ExpiresAt: expiresAt, CancelRequested: cancelRequested}, err
 }
 
 func (store *Store) Complete(ctx context.Context, record attempt.CompleteRecord) (bool, error) {

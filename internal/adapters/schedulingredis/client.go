@@ -23,7 +23,9 @@ func Open(value config.RedisEndpointConfig) *Client {
 	return &Client{client: redis.NewClient(&redis.Options{
 		Addr: value.Address, Password: value.Password, DB: value.DB,
 		DialTimeout: value.OperationTimeout.Duration(), ReadTimeout: value.OperationTimeout.Duration(),
-		WriteTimeout: value.OperationTimeout.Duration(), MaxRetries: value.MaxRetries,
+		WriteTimeout: value.OperationTimeout.Duration(), PoolTimeout: value.OperationTimeout.Duration(),
+		DialerRetries: 1, DialerRetryTimeout: value.OperationTimeout.Duration(),
+		ContextTimeoutEnabled: true, MaxRetries: value.MaxRetries,
 	}), prefix: value.KeyPrefix}
 }
 
@@ -433,6 +435,11 @@ local now = redis.call('TIME')
 local nowms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 if redis.call('HGET', KEYS[1], 'paused') ~= '0' or
    tonumber(redis.call('HGET', KEYS[1], 'expires_at') or '0') <= nowms then return {'__PAUSED__'} end
+local existing = redis.call('HGET', KEYS[5], ARGV[3])
+if existing then
+  redis.call('ZADD', KEYS[7], nowms + tonumber(ARGV[5]), ARGV[3])
+  return {existing}
+end
 while true do
   local project = redis.call('LPOP', KEYS[2])
   if not project then return {} end

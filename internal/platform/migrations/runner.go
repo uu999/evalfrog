@@ -54,44 +54,71 @@ func (runner Runner) Up(ctx context.Context) error {
 	}()
 
 	identifier := pgx.Identifier{runner.Schema}.Sanitize()
-	if _, err := connection.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+identifier); err != nil {
-		return fmt.Errorf("create schema: %w", err)
-	}
 	table := identifier + ".schema_migrations"
-	if _, err := connection.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+table+" (version BIGINT PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"); err != nil {
-		return fmt.Errorf("create migration ledger: %w", err)
+	if err := runner.withMigrationTransaction(ctx, connection, 0, func(transaction pgx.Tx) error {
+		if _, err := transaction.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+identifier); err != nil {
+			return fmt.Errorf("create schema: %w", err)
+		}
+		if _, err := transaction.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+table+" (version BIGINT PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"); err != nil {
+			return fmt.Errorf("create migration ledger: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	for _, migration := range plan {
-		var checksum string
-		err := connection.QueryRow(ctx, "SELECT checksum FROM "+table+" WHERE version=$1", migration.Version).Scan(&checksum)
-		switch {
-		case err == nil:
-			if checksum != migration.Checksum {
-				return fmt.Errorf("migration %06d checksum mismatch", migration.Version)
+		if err := runner.withMigrationTransaction(ctx, connection, migration.Version, func(transaction pgx.Tx) error {
+			var checksum string
+			err := transaction.QueryRow(ctx, "SELECT checksum FROM "+table+" WHERE version=$1", migration.Version).Scan(&checksum)
+			switch {
+			case err == nil:
+				if checksum != migration.Checksum {
+					return fmt.Errorf("migration %06d checksum mismatch", migration.Version)
+				}
+				return nil
+			case !errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("read migration %06d: %w", migration.Version, err)
 			}
-			continue
-		case !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read migration %06d: %w", migration.Version, err)
+			if _, err := transaction.Exec(ctx, "SET LOCAL search_path TO "+identifier); err != nil {
+				return fmt.Errorf("set migration schema %06d: %w", migration.Version, err)
+			}
+			if _, err := transaction.Exec(ctx, migration.SQL); err != nil {
+				return fmt.Errorf("execute migration %06d_%s: %w", migration.Version, migration.Name, err)
+			}
+			if _, err := transaction.Exec(ctx, "INSERT INTO "+table+" (version, name, checksum) VALUES ($1, $2, $3)", migration.Version, migration.Name, migration.Checksum); err != nil {
+				return fmt.Errorf("record migration %06d: %w", migration.Version, err)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
-		transaction, err := connection.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("begin migration %06d: %w", migration.Version, err)
-		}
-		if _, err := transaction.Exec(ctx, "SET LOCAL search_path TO "+identifier); err != nil {
+	}
+	return nil
+}
+
+// withMigrationTransaction isolates every statement that belongs to schema
+// evolution from the short timeout configured for online request pools. The
+// advisory lock is still acquired with LockTimeout before entering here, and
+// SET LOCAL disappears at commit/rollback, so the borrowed connection cannot
+// leak a permissive timeout back to ordinary application queries.
+func (runner Runner) withMigrationTransaction(ctx context.Context, connection *pgxpool.Conn, version int64, apply func(pgx.Tx) error) (result error) {
+	transaction, err := connection.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migration %06d: %w", version, err)
+	}
+	defer func() {
+		if result != nil {
 			_ = transaction.Rollback(ctx)
-			return fmt.Errorf("set migration schema %06d: %w", migration.Version, err)
 		}
-		if _, err := transaction.Exec(ctx, migration.SQL); err != nil {
-			_ = transaction.Rollback(ctx)
-			return fmt.Errorf("execute migration %06d_%s: %w", migration.Version, migration.Name, err)
-		}
-		if _, err := transaction.Exec(ctx, "INSERT INTO "+table+" (version, name, checksum) VALUES ($1, $2, $3)", migration.Version, migration.Name, migration.Checksum); err != nil {
-			_ = transaction.Rollback(ctx)
-			return fmt.Errorf("record migration %06d: %w", migration.Version, err)
-		}
-		if err := transaction.Commit(ctx); err != nil {
-			return fmt.Errorf("commit migration %06d: %w", migration.Version, err)
-		}
+	}()
+	if _, err := transaction.Exec(ctx, "SET LOCAL statement_timeout TO 0"); err != nil {
+		return fmt.Errorf("disable migration statement timeout %06d: %w", version, err)
+	}
+	if err := apply(transaction); err != nil {
+		return err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migration %06d: %w", version, err)
 	}
 	return nil
 }
