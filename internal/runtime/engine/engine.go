@@ -279,7 +279,7 @@ func (engine *Engine) HandleAttemptCompleted(attemptID string, at time.Time) err
 			}
 			return nil
 		}
-		failure := engine.failure(result.ErrorCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, "", false)
+		failure := engine.failure(result.ErrorCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, result.DSLField, false)
 		if err := node.FailAttempt(attemptID, runtime.NodeFailed, failure); err != nil {
 			return err
 		}
@@ -295,7 +295,7 @@ func (engine *Engine) HandleAttemptCompleted(attemptID string, at time.Time) err
 		if result.State == runtime.AttemptTimedOut && failureCode == "" {
 			failureCode = FailureNodeTimeout
 		}
-		failure := engine.failure(failureCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, "", false)
+		failure := engine.failure(failureCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, result.DSLField, false)
 		target := runtime.NodeFailed
 		if result.State == runtime.AttemptTimedOut {
 			target = runtime.NodeTimedOut
@@ -305,7 +305,7 @@ func (engine *Engine) HandleAttemptCompleted(attemptID string, at time.Time) err
 		}
 		_, _ = engine.run.RequestTermination(runtime.TerminationIntent{Kind: runtime.TerminationFailed, RequestedAt: at, Cause: failure})
 	case runtime.AttemptCanceled:
-		failure := engine.failure(result.ErrorCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, "", false)
+		failure := engine.failure(result.ErrorCode, "node_execution", result.Message, dsl.NodeID(node.ExecutionNodeID()), attemptID, result.DSLField, false)
 		if err := node.Cancel(FailureNodeFailed); err != nil {
 			return err
 		}

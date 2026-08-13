@@ -61,6 +61,11 @@ worker:
   recovery_scanner_interval: 2s
   recovery_backoff: [1s, 2s, 4s]
 
+sandbox:
+  image: "evalfrog-sandbox-python:dev"
+  runtime: "runc"
+  command: "docker"
+
 outbox:
   batch: 20
   publish_concurrency: 2

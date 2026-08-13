@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/uu999/evalfrog/internal/ir"
+	"github.com/uu999/evalfrog/internal/sandbox"
 )
 
 var (
@@ -111,8 +112,29 @@ func codeContract() contract {
 				Outputs: []ir.Output{{Name: "result", DataType: ir.TypeObject}},
 			}},
 		},
-		validate: func(node ir.Node) []ir.Diagnostic { return nonEmptyLiteral(node, "source_code") },
+		validate: validateCode,
 	}
+}
+
+func validateCode(node ir.Node) []ir.Diagnostic {
+	diagnostics := nonEmptyLiteral(node, "source_code")
+	for _, input := range node.Inputs {
+		if input.Name != "source_code" || input.Source != ir.SourceLiteral {
+			continue
+		}
+		var source string
+		if err := json.Unmarshal(input.Value, &source); err != nil || source == "" {
+			return diagnostics
+		}
+		if sourceError := sandbox.ValidateSource(source); sourceError != nil {
+			diagnostic := ir.ErrorDiagnostic(ir.PhaseCatalog, sourceError.Code, sourceError.Message, ir.Location{LogicalNodeID: node.ID, IRPath: "/nodes/" + string(node.ID) + "/inputs/source_code"})
+			if sourceError.Line > 0 {
+				diagnostic.Details = map[string]any{"source_line": sourceError.Line, "source_column": sourceError.Column}
+			}
+			diagnostics = append(diagnostics, diagnostic)
+		}
+	}
+	return diagnostics
 }
 
 func httpContract() contract {

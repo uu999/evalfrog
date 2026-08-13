@@ -84,7 +84,9 @@ jobs:
       - name: CLI doctor
         run: docker compose -f deployments/compose.yaml run --build --rm --no-deps evalfrog-cli doctor --profile local --config-dir /app/configs
       - name: PostgreSQL integration tests
-        run: go test -tags=integration ./tests/integration
+        run: |
+          docker build -t evalfrog-sandbox-python:test -f deployments/sandbox/Dockerfile deployments/sandbox
+          go test -tags=integration ./tests/integration ./internal/adapters/sandbox
       - name: Stop M0 stack
         if: always()
         run: docker compose -f deployments/compose.yaml down -v --remove-orphans

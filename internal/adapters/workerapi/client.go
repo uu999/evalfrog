@@ -87,7 +87,7 @@ func (client *Client) Complete(ctx context.Context, command attempt.CompleteComm
 		AttemptSequence: command.AttemptSequence, LeaseToken: command.LeaseToken,
 		FencingToken: command.FencingToken, State: command.Result.State,
 		Outputs: command.Result.Outputs, ErrorCode: command.Result.ErrorCode,
-		Message: command.Result.Message, TraceID: command.TraceID}
+		Message: command.Result.Message, DSLField: command.Result.DSLField, ErrorDetails: command.Result.ErrorDetails, TraceID: command.TraceID}
 	var response struct {
 		Accepted bool `json:"accepted"`
 	}

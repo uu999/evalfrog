@@ -129,6 +129,8 @@ type completeRequest struct {
 	Outputs         map[string]json.RawMessage `json:"outputs"`
 	ErrorCode       string                     `json:"error_code"`
 	Message         string                     `json:"message"`
+	DSLField        string                     `json:"dsl_field,omitempty"`
+	ErrorDetails    map[string]any             `json:"error_details,omitempty"`
 	TraceID         string                     `json:"trace_id"`
 }
 
@@ -204,7 +206,7 @@ func (handler *Handler) complete(writer http.ResponseWriter, request *http.Reque
 		ProjectID: body.ProjectID, RunID: body.RunID, AttemptID: request.PathValue("attempt_id"),
 		AttemptSequence: body.AttemptSequence, LeaseToken: body.LeaseToken,
 		FencingToken: body.FencingToken, TraceID: body.TraceID,
-		Result: runtime.AttemptResult{State: body.State, Outputs: body.Outputs, ErrorCode: body.ErrorCode, Message: body.Message},
+		Result: runtime.AttemptResult{State: body.State, Outputs: body.Outputs, ErrorCode: body.ErrorCode, Message: body.Message, DSLField: body.DSLField, ErrorDetails: body.ErrorDetails},
 	})
 	if writeDomainError(writer, err) {
 		return

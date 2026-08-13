@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: EvalFrog Worker API
-  version: 1.0.0-m8
+  version: 1.0.0-m9
   description: Internal HTTP/JSON control protocol. Workers never receive database credentials.
 paths:
   /internal/v1/attempts/{attempt_id}/claim:
@@ -19,6 +19,7 @@ paths:
     post:
       operationId: completeAttempt
       parameters: [{name: attempt_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CompleteRequest'}}}}
       responses: {'200': {description: Completion accepted or already recorded}}
   /internal/v1/attempts/{attempt_id}/context:
     post:
@@ -78,3 +79,20 @@ components:
         service_id: {type: string}
         operation: {type: string}
         contract_revision: {type: string}
+    CompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, run_id, attempt_sequence, lease_token, fencing_token, state, trace_id]
+      properties:
+        project_id: {type: string, minLength: 1}
+        run_id: {type: string, minLength: 1}
+        attempt_sequence: {type: integer, minimum: 1}
+        lease_token: {type: string, minLength: 1}
+        fencing_token: {type: integer, minimum: 1}
+        state: {enum: [succeeded, failed, timed_out, canceled, lost]}
+        outputs: {type: object, additionalProperties: true}
+        error_code: {type: string}
+        message: {type: string}
+        dsl_field: {type: string}
+        error_details: {type: object, additionalProperties: true}
+        trace_id: {type: string, minLength: 1}

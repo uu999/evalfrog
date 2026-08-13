@@ -3,7 +3,6 @@ package workerapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -45,8 +44,8 @@ func TestWorkerAPIClientAndHandlerRoundTrip(t *testing.T) {
 	if err != nil || value.ContextVersion != 1 || gateway.command.AttemptID != "attempt" {
 		t.Fatalf("context=%+v command=%+v err=%v", value, gateway.command, err)
 	}
-	accepted, err := client.Complete(ctx, attempt.CompleteCommand{ProjectID: "project", RunID: "run", AttemptID: "attempt", AttemptSequence: 1, LeaseToken: "lease", FencingToken: 1, TraceID: "trace", Result: platformruntime.AttemptResult{State: platformruntime.AttemptSucceeded, Outputs: map[string]json.RawMessage{"result": json.RawMessage(`1`)}}})
-	if err != nil || !accepted || coordinator.complete.Result.State != platformruntime.AttemptSucceeded {
+	accepted, err := client.Complete(ctx, attempt.CompleteCommand{ProjectID: "project", RunID: "run", AttemptID: "attempt", AttemptSequence: 1, LeaseToken: "lease", FencingToken: 1, TraceID: "trace", Result: platformruntime.AttemptResult{State: platformruntime.AttemptFailed, ErrorCode: "CODE_RUNTIME_ERROR", Message: "bad", DSLField: "operation.config.source_code", ErrorDetails: map[string]any{"source_line": 3}}})
+	if err != nil || !accepted || coordinator.complete.Result.DSLField != "operation.config.source_code" || coordinator.complete.Result.ErrorDetails["source_line"] != float64(3) {
 		t.Fatalf("accepted=%v complete=%+v err=%v", accepted, coordinator.complete, err)
 	}
 }

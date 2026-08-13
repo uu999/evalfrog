@@ -347,9 +347,11 @@ func completionError(result runtime.AttemptResult) json.RawMessage {
 		return nil
 	}
 	value, _ := json.Marshal(struct {
-		ErrorCode string `json:"error_code"`
-		Message   string `json:"message"`
-	}{result.ErrorCode, result.Message})
+		ErrorCode    string         `json:"error_code"`
+		Message      string         `json:"message"`
+		DSLField     string         `json:"dsl_field,omitempty"`
+		ErrorDetails map[string]any `json:"error_details,omitempty"`
+	}{result.ErrorCode, result.Message, result.DSLField, result.ErrorDetails})
 	return value
 }
 
