@@ -32,6 +32,7 @@ func (violation Violation) Error() string {
 var domainPrefixes = []string{
 	"internal/access", "internal/resources", "internal/definition", "internal/ir", "internal/catalog",
 	"internal/compiler", "internal/dsl", "internal/sourcemap", "internal/runtime", "internal/scheduling", "internal/eventing", "internal/recovery", "internal/projection",
+	"internal/sandbox",
 }
 
 func Validate(graph Graph) []Violation {

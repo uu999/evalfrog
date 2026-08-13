@@ -7,8 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/uu999/evalfrog/internal/adapters/kafka"
+	sandboxadapter "github.com/uu999/evalfrog/internal/adapters/sandbox"
 	"github.com/uu999/evalfrog/internal/adapters/workerapi"
-	"github.com/uu999/evalfrog/internal/dsl"
 	"github.com/uu999/evalfrog/internal/platform/bootstrap"
 	"github.com/uu999/evalfrog/internal/platform/buildinfo"
 	"github.com/uu999/evalfrog/internal/platform/config"
@@ -18,7 +18,9 @@ import (
 	"github.com/uu999/evalfrog/internal/platform/lifecycle"
 	"github.com/uu999/evalfrog/internal/platform/logging"
 	"github.com/uu999/evalfrog/internal/platform/metrics"
+	"github.com/uu999/evalfrog/internal/sandbox"
 	"github.com/uu999/evalfrog/internal/scheduling"
+	codeexecutor "github.com/uu999/evalfrog/internal/worker/executor/code"
 	hexecutor "github.com/uu999/evalfrog/internal/worker/executor/http"
 	rpcexecutor "github.com/uu999/evalfrog/internal/worker/executor/rpc"
 	workerruntime "github.com/uu999/evalfrog/internal/worker/runtime"
@@ -67,14 +69,23 @@ func RunProcess(ctx context.Context, arguments []string, resourceClass string, o
 	if class == scheduling.ResourceSandbox {
 		topic = configuration.Kafka.Topics.SandboxTask
 		slots = configuration.Worker.SandboxSlots
-		executors = []workerruntime.Executor{workerruntime.EchoTestExecutor{Operation: dsl.Coordinate{Type: "task.python", Version: 1}}}
+		orchestrator, constructionErr := sandboxadapter.NewDockerOrchestrator(configuration.Sandbox.Command, sandbox.DefaultProfile(configuration.Sandbox.Image, configuration.Sandbox.Runtime))
+		if constructionErr != nil {
+			fmt.Fprintln(errorOutput, constructionErr)
+			return 1
+		}
+		if sweeper, supported := any(orchestrator).(sandbox.OrphanSweeper); supported {
+			sweepCtx, cancelSweep := context.WithTimeout(ctx, sandbox.DefaultProfile(configuration.Sandbox.Image, configuration.Sandbox.Runtime).CleanupTimeout)
+			sweepErr := sweeper.Sweep(sweepCtx)
+			cancelSweep()
+			if sweepErr != nil {
+				logger.Warn("sandbox orphan sweep deferred; runtime will retry on next worker start", "error", sweepErr)
+			}
+		}
+		executors = []workerruntime.Executor{codeexecutor.NewExecutor(orchestrator, sandboxTelemetry{logger: logger})}
 	}
 	if !class.Valid() {
 		logger.Error("worker resource class is invalid", "resource_class", resourceClass)
-		return 1
-	}
-	if configuration.Profile == "production-default" && class == scheduling.ResourceSandbox {
-		logger.Error("M9 sandbox executor is not available in production-default")
 		return 1
 	}
 	// A fetched batch holds the Kafka rebalance gate until every record has
@@ -132,6 +143,12 @@ func RunProcess(ctx context.Context, arguments []string, resourceClass string, o
 		return 1
 	}
 	return 0
+}
+
+type sandboxTelemetry struct{ logger *slog.Logger }
+
+func (telemetry sandboxTelemetry) Record(value sandbox.Telemetry, outcome string) {
+	telemetry.logger.Info("sandbox attempt completed", "outcome", outcome, "runtime", value.Runtime, "duration_ms", value.Duration.Milliseconds())
 }
 
 func mustRegister(logger *slog.Logger, registry *health.Registry, name string, check health.Check) {

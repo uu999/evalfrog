@@ -32,6 +32,7 @@ type Config struct {
 	Kafka         KafkaConfig         `yaml:"kafka"`
 	Scheduler     SchedulerConfig     `yaml:"scheduler"`
 	Worker        WorkerConfig        `yaml:"worker"`
+	Sandbox       SandboxConfig       `yaml:"sandbox"`
 	Outbox        OutboxConfig        `yaml:"outbox"`
 	Cache         CacheConfig         `yaml:"cache"`
 	Migrations    MigrationConfig     `yaml:"migrations"`
@@ -144,6 +145,15 @@ type WorkerConfig struct {
 	ClaimTimeout                  Duration   `yaml:"claim_timeout"`
 	CompleteTimeout               Duration   `yaml:"complete_timeout"`
 	RecoveryBackoff               []Duration `yaml:"recovery_backoff"`
+}
+
+// SandboxConfig is deployment configuration, not workflow configuration. The
+// fixed resource envelope remains in sandbox.DefaultProfile so neither a
+// project nor an Agent can relax it.
+type SandboxConfig struct {
+	Image   string `yaml:"image"`
+	Runtime string `yaml:"runtime"`
+	Command string `yaml:"command"`
 }
 
 type OutboxConfig struct {
@@ -301,6 +311,9 @@ func applyEnvironment(config *Config, lookup func(string) (string, bool)) {
 	setString("EVALFROG_SCHEDULING_REDIS_ADDRESS", &config.Redis.Scheduling.Address)
 	setString("EVALFROG_CACHE_REDIS_ADDRESS", &config.Redis.Cache.Address)
 	setString("EVALFROG_MIGRATIONS_DIR", &config.Migrations.Directory)
+	setString("EVALFROG_SANDBOX_IMAGE", &config.Sandbox.Image)
+	setString("EVALFROG_SANDBOX_RUNTIME", &config.Sandbox.Runtime)
+	setString("EVALFROG_SANDBOX_COMMAND", &config.Sandbox.Command)
 	if value, ok := lookup("EVALFROG_KAFKA_BROKERS"); ok && strings.TrimSpace(value) != "" {
 		parts := strings.Split(value, ",")
 		config.Kafka.Brokers = config.Kafka.Brokers[:0]
@@ -401,6 +414,12 @@ func (config Config) Validate() error {
 	add(len(config.Worker.RecoveryBackoff) == 0, "worker recovery_backoff is required")
 	for _, backoff := range config.Worker.RecoveryBackoff {
 		add(backoff.Duration() <= 0, "worker recovery_backoff values must be positive")
+	}
+	add(config.Sandbox.Image == "" || config.Sandbox.Command == "", "sandbox image and command are required")
+	add(config.Sandbox.Runtime != "runc" && config.Sandbox.Runtime != "runsc", "sandbox runtime must be runc or runsc")
+	if config.Profile == ProductionDefault {
+		add(config.Sandbox.Runtime != "runsc", "production sandbox runtime must be runsc")
+		add(!strings.Contains(config.Sandbox.Image, "@sha256:"), "production sandbox image must be pinned by digest")
 	}
 
 	minimumInboxRetention := config.Kafka.Topics.RuntimeEvent.Retention.Duration() + config.Kafka.MaxManualReplayWindow.Duration()

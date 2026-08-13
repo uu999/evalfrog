@@ -96,6 +96,13 @@ worker:
   complete_timeout: 10s
   recovery_backoff: [5s, 15s, 45s]
 
+sandbox:
+  # Replace this verified placeholder during environment provisioning. A digest
+  # is required so a published definition never executes on a mutable image.
+  image: "registry.example.invalid/evalfrog/python-sandbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  runtime: "runsc"
+  command: "docker"
+
 outbox:
   batch: 100
   active_poll: 100ms

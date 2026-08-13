@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	sandboxcontract "github.com/uu999/evalfrog/internal/sandbox"
 )
 
 var (
@@ -586,6 +588,8 @@ func validatePythonConfig(node Node) []Issue {
 	var source, sandbox string
 	if !decodeConfig(node, "source_code", &source) || source == "" {
 		issues = append(issues, Issue{Code: "DSL_PYTHON_SOURCE_INVALID", Message: "python source_code is required", NodeID: node.ID, Field: "operation.config.source_code"})
+	} else if sourceError := sandboxcontract.ValidateSource(source); sourceError != nil {
+		issues = append(issues, Issue{Code: sourceError.Code, Message: sourceError.Message, NodeID: node.ID, Field: sandboxcontract.SourceField})
 	}
 	if !decodeConfig(node, "sandbox_profile", &sandbox) || sandbox == "" {
 		issues = append(issues, Issue{Code: "DSL_SANDBOX_PROFILE_INVALID", Message: "sandbox profile is required", NodeID: node.ID, Field: "operation.config.sandbox_profile"})

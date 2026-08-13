@@ -11,6 +11,22 @@ import (
 	"github.com/uu999/evalfrog/internal/runtime"
 )
 
+func TestAttemptFailurePreservesReportedDSLField(t *testing.T) {
+	harness := newTestHarness(t, linearDocument(1))
+	attempts, err := harness.StartReady()
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("attempts=%v err=%v", attempts, err)
+	}
+	if err = harness.Complete(attempts[0], runtime.AttemptResult{State: runtime.AttemptFailed, ErrorCode: "CODE_RUNTIME_ERROR", Message: "bad", DSLField: "operation.config.source_code"}); err != nil {
+		t.Fatal(err)
+	}
+	node, _ := harness.Engine.Node(harness.Engine.attemptNodes[attempts[0]])
+	failure, exists := node.Failure()
+	if !exists || failure.DSLField != "operation.config.source_code" {
+		t.Fatalf("failure=%+v exists=%v", failure, exists)
+	}
+}
+
 func TestLinearWorkflowCompletesAndControlNodesHaveNoAttempts(t *testing.T) {
 	document := linearDocument(2)
 	harness := newTestHarness(t, document)

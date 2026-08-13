@@ -230,7 +230,7 @@ func (worker *Runtime) receiveAndExecute(ctx context.Context) error {
 		return nil
 	default:
 	}
-	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+	if errors.Is(execCtx.Err(), context.DeadlineExceeded) && !result.State.Terminal() {
 		result = platformruntime.AttemptResult{State: platformruntime.AttemptTimedOut, ErrorCode: "NODE_TIMEOUT", Message: "executor exceeded attempt timeout"}
 	}
 	if !result.State.Terminal() || result.State == platformruntime.AttemptLost {

@@ -153,6 +153,18 @@ func TestExecutorProtocolTimeoutAndMissingExecutorAreSettled(t *testing.T) {
 	}
 }
 
+func TestExecutorTimeoutResultKeepsSandboxErrorCode(t *testing.T) {
+	executor := resultExecutor{coordinate: dsl.Coordinate{Type: "task.python", Version: 1}, waitForCancellation: true, result: platformruntime.AttemptResult{State: platformruntime.AttemptTimedOut, ErrorCode: "SANDBOX_EXECUTION_TIMEOUT", Message: "sandbox timeout", DSLField: "operation.config.source_code"}}
+	worker, _, attempts := runtimeFixture(t, executor)
+	attempts.attemptTimeout = time.Millisecond
+	if err := worker.receiveAndExecute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if attempts.complete.Result.ErrorCode != "SANDBOX_EXECUTION_TIMEOUT" || attempts.complete.Result.DSLField != "operation.config.source_code" {
+		t.Fatalf("result=%+v", attempts.complete.Result)
+	}
+}
+
 func TestStaleCompletionAndHeartbeatFailureCannotBecomeEffective(t *testing.T) {
 	executor := &blockingExecutor{started: make(chan struct{}), release: make(chan struct{})}
 	worker, consumer, attempts := runtimeFixture(t, executor)
@@ -270,6 +282,7 @@ type fakeAttempts struct {
 	completed                           chan struct{}
 	operation                           dsl.Coordinate
 	attemptTimeout                      time.Duration
+	complete                            attempt.CompleteCommand
 }
 
 func (value *fakeAttempts) Claim(context.Context, attempt.ClaimCommand) (attempt.Lease, error) {
@@ -281,7 +294,8 @@ func (value *fakeAttempts) Claim(context.Context, attempt.ClaimCommand) (attempt
 func (value *fakeAttempts) Heartbeat(context.Context, attempt.HeartbeatCommand) (attempt.Lease, error) {
 	return attempt.Lease{}, value.heartbeatErr
 }
-func (value *fakeAttempts) Complete(context.Context, attempt.CompleteCommand) (bool, error) {
+func (value *fakeAttempts) Complete(_ context.Context, command attempt.CompleteCommand) (bool, error) {
+	value.complete = command
 	value.completes.Add(1)
 	select {
 	case value.completed <- struct{}{}:

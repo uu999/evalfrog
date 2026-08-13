@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M7 Kafka 分布式执行骨架、通用 Worker Runtime、Worker API、Execution Context Cache-Aside 与 Lease Recovery 已实现，下一阶段为 M8 HTTP/RPC Builtin Executor**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M0-M9 已完成：Kafka 分布式执行、受管 HTTP/RPC Runtime 与 Python Per-Attempt Sandbox 已接入；下一阶段为 M10 External API、CLI 与 Human Web 核心闭环**。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
 
 ## 为什么是 EvalFrog
 
@@ -181,7 +181,7 @@ M7 已跑通 `Scheduler Outbox → Kafka → Worker → Attempt Coordinator → 
 - Kafka Consumer 在 `Poll → Claim/Inbox → ACK` 短窗口内阻塞 Rebalance，ACK 后立即释放，节点长时间执行不会阻塞分区再均衡；
 - 真实 PostgreSQL、Scheduling Redis、故障 Cache Redis 与 Kafka 集成测试验证两个 Control Plane API 副本、两个 Worker/Engine Consumer 副本、重复投递、Lease 过期、Lost/Recovery 和旧 Fencing Result 拒绝。
 
-M7 只启用 local/test Echo Executor 来证明协议；`production-default` 会拒绝以测试 Executor 启动。真正的 HTTP/RPC 执行和 Managed Resource 运行身份属于 M8，Python Per-Attempt Sandbox 属于 M9。
+M7 仅用 local/test Echo Executor 验证分布式协议；M8 已接入真实 HTTP/RPC 与 Managed Resource Runtime，M9 已用 Per-Attempt Python Sandbox 替代 Sandbox Pool 的 Echo Executor。`production-default` 仅接受 hardened runtime 配置。
 
 ## 开发检查
 
@@ -387,7 +387,9 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0-M8 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架，以及受管 HTTP/RPC Builtin Executor。Python Sandbox、完整 External Run API、CLI 与 Web 闭环仍属于后续阶段；README 不把计划能力描述成当前成果。
-## M8 Runtime Status
+M0-M9 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor，以及 Python Per-Attempt Sandbox。完整 External Run API、CLI 与 Web 闭环仍属于后续阶段；README 不把计划能力描述成当前成果。
+## M8-M9 Runtime Status
 
-M8 is implemented: Builtin Worker now executes managed HTTP/RPC nodes with Connection-relative paths, Service Catalog operation binding, runtime identity checks, Secret Resolver Port, stable idempotency keys, and Attempt Resource Revision audit. Python Sandbox remains M9.
+M8 is implemented: Builtin Worker executes managed HTTP/RPC nodes with Connection-relative paths, Service Catalog operation binding, runtime identity checks, Secret Resolver Port, stable idempotency keys, and Attempt Resource Revision audit.
+
+M9 is implemented: Code Worker creates one fixed-profile Python 3.12 OCI sandbox per Attempt. Source and resolved JSON inputs cross the sandbox boundary, while network, host mounts, root filesystem writes, privileges and Worker credentials do not. Production requires `runsc` plus a digest-pinned image; local/CI uses `runc` only for protocol verification. Approved model artifact injection remains explicitly unavailable until its dedicated runtime port exists.

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"time"
 )
 
@@ -544,14 +546,16 @@ func (state AttemptState) Terminal() bool {
 }
 
 type AttemptResult struct {
-	State     AttemptState               `json:"state"`
-	Outputs   map[string]json.RawMessage `json:"outputs,omitempty"`
-	ErrorCode string                     `json:"error_code,omitempty"`
-	Message   string                     `json:"message,omitempty"`
+	State        AttemptState               `json:"state"`
+	Outputs      map[string]json.RawMessage `json:"outputs,omitempty"`
+	ErrorCode    string                     `json:"error_code,omitempty"`
+	Message      string                     `json:"message,omitempty"`
+	DSLField     string                     `json:"dsl_field,omitempty"`
+	ErrorDetails map[string]any             `json:"error_details,omitempty"`
 }
 
 func (result AttemptResult) Equal(other AttemptResult) bool {
-	if result.State != other.State || result.ErrorCode != other.ErrorCode || result.Message != other.Message || len(result.Outputs) != len(other.Outputs) {
+	if result.State != other.State || result.ErrorCode != other.ErrorCode || result.Message != other.Message || result.DSLField != other.DSLField || len(result.Outputs) != len(other.Outputs) || !reflect.DeepEqual(result.ErrorDetails, other.ErrorDetails) {
 		return false
 	}
 	for key, value := range result.Outputs {
@@ -722,6 +726,9 @@ func cloneRaw(value json.RawMessage) json.RawMessage { return append(json.RawMes
 
 func cloneResult(result AttemptResult) AttemptResult {
 	result.Outputs = cloneValues(result.Outputs)
+	if result.ErrorDetails != nil {
+		result.ErrorDetails = maps.Clone(result.ErrorDetails)
+	}
 	return result
 }
 

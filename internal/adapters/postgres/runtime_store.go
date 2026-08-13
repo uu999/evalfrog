@@ -275,13 +275,15 @@ func (transaction *runtimeTransaction) LoadEngineState(ctx context.Context, proj
 			result := runtime.AttemptResult{State: attempt.State}
 			if len(errorJSON) != 0 {
 				var failure struct {
-					ErrorCode string `json:"error_code"`
-					Message   string `json:"message"`
+					ErrorCode    string         `json:"error_code"`
+					Message      string         `json:"message"`
+					DSLField     string         `json:"dsl_field"`
+					ErrorDetails map[string]any `json:"error_details"`
 				}
 				if err = json.Unmarshal(errorJSON, &failure); err != nil {
 					return engine.State{}, err
 				}
-				result.ErrorCode, result.Message = failure.ErrorCode, failure.Message
+				result.ErrorCode, result.Message, result.DSLField, result.ErrorDetails = failure.ErrorCode, failure.Message, failure.DSLField, failure.ErrorDetails
 			}
 			if err = decodeJSONMap(outputJSON, &result.Outputs); err != nil {
 				return engine.State{}, err
