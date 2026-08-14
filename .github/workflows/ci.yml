@@ -101,7 +101,7 @@ jobs:
           docker build -t evalfrog-sandbox-python:test -f deployments/sandbox/Dockerfile deployments/sandbox
           # Resolve modules while building on the normal CI network. The test
           # process itself then runs with no authority-network egress.
-          docker build --target build -t evalfrog-integration-runner .
+          docker build --target integration-test-runner -t evalfrog-integration-runner .
           docker run --rm \
             --network evalfrog-local_authority \
             -e EVALFROG_M12_COMPOSE=1 \

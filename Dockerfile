@@ -19,6 +19,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -o "/out/${target}" "./cmd/${target}"; \
     done
 
+# CI runs integration tests from the authority network, which deliberately
+# has no egress. Unlike a BuildKit cache mount, this module cache is part of
+# the exported image so `go test` cannot fall back to proxy.golang.org.
+FROM build AS integration-test-runner
+RUN go mod download
+
 FROM scratch AS runtime-base
 WORKDIR /app
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
