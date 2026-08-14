@@ -110,7 +110,10 @@ jobs:
             -e EVALFROG_CACHE_REDIS_ADDRESS=redis-cache:6379 \
             -e EVALFROG_KAFKA_BROKERS=kafka:9092 \
             golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 \
-            go test -tags=integration ./tests/integration ./internal/adapters/sandbox
+            go test -tags=integration ./tests/integration
+          # This adapter test intentionally exercises the Runner Docker daemon.
+          # It must stay outside the socket-free authority-network test runner.
+          go test -tags=integration ./internal/adapters/sandbox
       - name: Stop M0 stack
         if: always()
         run: docker compose -f deployments/compose.yaml down -v --remove-orphans
