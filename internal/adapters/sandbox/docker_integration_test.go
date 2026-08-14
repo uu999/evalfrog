@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func TestDockerSandboxIntegration(t *testing.T) {
-	profile := domainsandbox.DefaultProfile("evalfrog-sandbox-python:test", "runc")
+	profile := domainsandbox.DefaultProfile("evalfrog-sandbox-python:test", sandboxIntegrationRuntime(t))
 	orchestrator, err := NewDockerOrchestrator("docker", profile)
 	if err != nil {
 		t.Fatal(err)
@@ -40,4 +41,20 @@ func TestDockerSandboxIntegration(t *testing.T) {
 	if err != nil || result.Failure == nil || result.Failure.Code != "SANDBOX_EXECUTION_TIMEOUT" {
 		t.Fatalf("timeout result=%#v err=%v", result, err)
 	}
+}
+
+// sandboxIntegrationRuntime defaults to runc for local protocol coverage.
+// The dedicated release gate sets it to runsc and therefore executes the
+// identical contract against the hardened OCI runtime rather than treating a
+// mock or an argument assertion as runsc evidence.
+func sandboxIntegrationRuntime(t *testing.T) string {
+	t.Helper()
+	runtime := os.Getenv("EVALFROG_SANDBOX_INTEGRATION_RUNTIME")
+	if runtime == "" {
+		return "runc"
+	}
+	if runtime != "runc" && runtime != "runsc" {
+		t.Fatalf("unsupported integration sandbox runtime %q", runtime)
+	}
+	return runtime
 }

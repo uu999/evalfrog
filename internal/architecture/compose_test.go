@@ -21,7 +21,7 @@ func TestWorkersReceiveNoAuthoritativeStoreCredentials(t *testing.T) {
 	var document struct {
 		Services map[string]struct {
 			Environment map[string]string `yaml:"environment"`
-			Networks    []string          `yaml:"networks"`
+			Networks    any               `yaml:"networks"`
 			Volumes     []string          `yaml:"volumes"`
 			ReadOnly    bool              `yaml:"read_only"`
 			CapDrop     []string          `yaml:"cap_drop"`
@@ -61,6 +61,9 @@ func TestWorkersReceiveNoAuthoritativeStoreCredentials(t *testing.T) {
 	if !hasNetwork(document.Services["worker-builtin"].Networks, "managed-egress") || hasNetwork(document.Services["worker-sandbox"].Networks, "managed-egress") {
 		t.Fatalf("only the builtin pool may have a managed egress path: builtin=%v sandbox=%v", document.Services["worker-builtin"].Networks, document.Services["worker-sandbox"].Networks)
 	}
+	if !hasNetwork(document.Services["control-plane"].Networks, "edge") || !hasNetworkAlias(document.Services["control-plane"].Networks, "edge", "evalfrog-control-plane") {
+		t.Fatalf("control-plane must publish the deployment-level edge DNS alias: %v", document.Services["control-plane"].Networks)
+	}
 	for _, service := range []string{"postgres", "redis-scheduling", "redis-cache"} {
 		if !hasNetwork(document.Services[service].Networks, "authority") || hasNetwork(document.Services[service].Networks, "worker") {
 			t.Fatalf("%s must not be attached to the Worker network: %v", service, document.Services[service].Networks)
@@ -78,7 +81,41 @@ func TestWorkersReceiveNoAuthoritativeStoreCredentials(t *testing.T) {
 	}
 }
 
-func hasNetwork(values []string, want string) bool { return hasString(values, want) }
+func hasNetwork(value any, want string) bool {
+	switch values := value.(type) {
+	case []any:
+		for _, current := range values {
+			if name, ok := current.(string); ok && name == want {
+				return true
+			}
+		}
+	case map[string]any:
+		_, exists := values[want]
+		return exists
+	}
+	return false
+}
+
+func hasNetworkAlias(value any, network, want string) bool {
+	networks, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	attachment, ok := networks[network].(map[string]any)
+	if !ok {
+		return false
+	}
+	aliases, ok := attachment["aliases"].([]any)
+	if !ok {
+		return false
+	}
+	for _, alias := range aliases {
+		if value, ok := alias.(string); ok && value == want {
+			return true
+		}
+	}
+	return false
+}
 
 func hasString(values []string, want string) bool {
 	for _, value := range values {

@@ -145,7 +145,13 @@ services:
       timeout: 2s
       retries: 30
     init: true
-    networks: [authority, worker, edge]
+    networks:
+      authority: {}
+      worker: {}
+      # The static Web image deliberately uses the deployment-level Control
+      # Plane name rather than Compose's implementation service name.
+      edge:
+        aliases: [evalfrog-control-plane]
 
   web:
     build:

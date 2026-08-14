@@ -118,3 +118,42 @@ jobs:
       - name: Stop M0 stack
         if: always()
         run: docker compose -f deployments/compose.yaml down -v --remove-orphans
+
+  sandbox-runsc:
+    name: sandbox-runsc
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install and register the gVisor Docker runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apt-transport-https ca-certificates curl gnupg
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y runsc
+          sudo runsc install
+          sudo systemctl restart docker
+          runsc --version
+          docker info --format 'runtimes={{json .Runtimes}} default={{.DefaultRuntime}}'
+          docker run --rm --runtime=runsc hello-world
+      - name: Build fixed Python sandbox image
+        run: docker build -t evalfrog-sandbox-python:test -f deployments/sandbox/Dockerfile deployments/sandbox
+      - name: Verify Sandbox contract through runsc
+        env:
+          EVALFROG_SANDBOX_INTEGRATION_RUNTIME: runsc
+        run: go test -count=1 -v -tags=integration ./internal/adapters/sandbox -run '^TestDockerSandboxIntegration$'
+      - name: Verify 1000 runsc create destroy cycles
+        env:
+          EVALFROG_M12_RUNSC_STRESS: "1"
+        run: go test -count=1 -v -timeout 30m -tags='integration stress' ./internal/adapters/sandbox -run '^TestDockerSandboxRunscCreateDestroyStress$'
+      - name: Assert no managed Sandbox container remains
+        if: always()
+        run: test -z "$(docker ps -aq --filter 'label=evalfrog.sandbox=python-v1')"
