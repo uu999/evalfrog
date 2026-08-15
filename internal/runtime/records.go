@@ -15,6 +15,7 @@ type WorkflowRunRecord struct {
 	ID                string              `json:"run_id"`
 	ProjectID         string              `json:"project_id"`
 	WorkflowID        string              `json:"workflow_id"`
+	TraceID           string              `json:"trace_id"`
 	Purpose           RunPurpose          `json:"purpose"`
 	Definition        DefinitionReference `json:"definition"`
 	WorkflowInput     json.RawMessage     `json:"workflow_input"`
@@ -94,7 +95,11 @@ func RestoreWorkflowRun(record WorkflowRunRecord) (*WorkflowRun, error) {
 		return nil, fmt.Errorf("%w: pending run cannot contain initialized nodes", ErrInvalidRun)
 	}
 	initializationFailed := record.State == RunFailed && len(record.ExecutionNodeIDs) == 0 && record.Termination != nil
-	if record.State != RunPending && !initializationFailed && len(record.ExecutionNodeIDs) < 2 {
+	// A durable RunCreated may be consumed after the immutable deadline. That
+	// terminal Run has intentionally never exposed Node Runs, just like the
+	// existing cancel-before-initialization path.
+	uninitializedTermination := (record.State == RunCanceled || record.State == RunTimedOut) && len(record.ExecutionNodeIDs) == 0 && record.Termination != nil
+	if record.State != RunPending && !initializationFailed && !uninitializedTermination && len(record.ExecutionNodeIDs) < 2 {
 		return nil, fmt.Errorf("%w: initialized run requires its complete node identity set", ErrInvalidRun)
 	}
 	identities := make(map[string]struct{}, len(record.ExecutionNodeIDs))

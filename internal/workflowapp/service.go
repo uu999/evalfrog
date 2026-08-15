@@ -12,8 +12,10 @@ import (
 
 	"github.com/uu999/evalfrog/internal/catalog"
 	"github.com/uu999/evalfrog/internal/definition"
+	"github.com/uu999/evalfrog/internal/eventing"
 	"github.com/uu999/evalfrog/internal/ir"
 	"github.com/uu999/evalfrog/internal/projection"
+	"github.com/uu999/evalfrog/internal/recovery"
 	"github.com/uu999/evalfrog/internal/resources"
 	"github.com/uu999/evalfrog/internal/runtime"
 )
@@ -41,6 +43,11 @@ type RunController interface {
 
 type RunReader interface {
 	GetRun(context.Context, string, string, string) (projection.RunView, error)
+	GetDiagnostics(context.Context, string, string, string) (projection.DiagnosticView, error)
+}
+
+type RunReplayer interface {
+	Replay(context.Context, recovery.Wakeup, string, string) (bool, error)
 }
 
 type NodeDirectory interface {
@@ -56,15 +63,20 @@ type Service struct {
 	runs        RunCreator
 	control     RunController
 	reader      RunReader
+	replayer    RunReplayer
 	catalog     NodeDirectory
 	connections ConnectionDirectory
 }
 
-func New(definitions DefinitionService, runs RunCreator, control RunController, reader RunReader, catalog NodeDirectory, connections ConnectionDirectory) (Service, error) {
+func New(definitions DefinitionService, runs RunCreator, control RunController, reader RunReader, catalog NodeDirectory, connections ConnectionDirectory, replayers ...RunReplayer) (Service, error) {
+	var replayer RunReplayer
+	if len(replayers) > 0 {
+		replayer = replayers[0]
+	}
 	if definitions == nil || runs == nil || control == nil || reader == nil || catalog == nil || connections == nil {
 		return Service{}, fmt.Errorf("workflow application dependencies are required")
 	}
-	return Service{definitions: definitions, runs: runs, control: control, reader: reader, catalog: catalog, connections: connections}, nil
+	return Service{definitions: definitions, runs: runs, control: control, reader: reader, replayer: replayer, catalog: catalog, connections: connections}, nil
 }
 
 func (service Service) CreateWorkflow(ctx context.Context, command definition.CreateWorkflowCommand) (definition.Workflow, definition.DraftRevision, []ir.Diagnostic, error) {
@@ -133,6 +145,15 @@ func (service Service) CancelRun(ctx context.Context, projectID, principalID, ru
 }
 func (service Service) GetRun(ctx context.Context, projectID, principalID, runID string) (projection.RunView, error) {
 	return service.reader.GetRun(ctx, projectID, principalID, runID)
+}
+func (service Service) GetDiagnostics(ctx context.Context, projectID, principalID, runID string) (projection.DiagnosticView, error) {
+	return service.reader.GetDiagnostics(ctx, projectID, principalID, runID)
+}
+func (service Service) ReplayRun(ctx context.Context, projectID, principalID, runID, eventType, aggregateID, traceID string) (bool, error) {
+	if service.replayer == nil {
+		return false, fmt.Errorf("manual replay is unavailable")
+	}
+	return service.replayer.Replay(ctx, recovery.Wakeup{ProjectID: projectID, RunID: runID, AggregateID: aggregateID, EventType: eventing.RuntimeEventType(eventType)}, traceID, principalID)
 }
 func (service Service) NodeTypes() []catalog.NodeDescription { return service.catalog.Descriptions() }
 func (service Service) Connections(ctx context.Context, projectID, principalID string) ([]resources.ConnectionSummary, error) {

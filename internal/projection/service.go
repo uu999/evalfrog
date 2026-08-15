@@ -59,6 +59,13 @@ func (service CachedService) GetRun(ctx context.Context, projectID, principalID,
 	return value, nil
 }
 
+func (service CachedService) GetDiagnostics(ctx context.Context, projectID, principalID, runID string) (DiagnosticView, error) {
+	// Diagnostics include a live lease and append-only audit trail. Do not put
+	// it in the generic Run projection cache, where it could be stale at the
+	// exact point an operator is investigating a recovery incident.
+	return service.Service.GetDiagnostics(ctx, projectID, principalID, runID)
+}
+
 func (service CachedService) ttl(value RunView) time.Duration {
 	if value.State.Terminal() {
 		return service.terminalTTL

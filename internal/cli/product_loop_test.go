@@ -57,8 +57,12 @@ func TestM10CLIProductLoopUsesOnlyIRAndStableExternalPaths(t *testing.T) {
 			writeCLIJSON(t, writer, http.StatusCreated, map[string]any{"run_id": "production-run", "purpose": "production", "state": "pending", "created_at": time.Now().UTC()})
 		case "GET /v1/projects/" + project + "/runs/production-run":
 			writeCLIJSON(t, writer, http.StatusOK, map[string]any{"run_id": "production-run", "project_id": project, "workflow_id": workflow, "purpose": "production", "state": "running", "state_version": 2, "snapshot_id": "snapshot", "deadline_at": time.Now().UTC(), "created_at": time.Now().UTC(), "updated_at": time.Now().UTC(), "cancel_requested": false, "nodes": []any{}})
+		case "GET /v1/projects/" + project + "/runs/production-run/diagnostics":
+			writeCLIJSON(t, writer, http.StatusOK, map[string]any{"run": map[string]any{"run_id": "production-run"}, "attempts": []any{}, "audit": []any{}})
 		case "POST /v1/projects/" + project + "/runs/production-run/cancel":
 			writeCLIJSON(t, writer, http.StatusAccepted, map[string]any{"accepted": true, "run": map[string]any{"run_id": "production-run", "purpose": "production", "state": "running", "created_at": time.Now().UTC()}})
+		case "POST /v1/projects/" + project + "/runs/production-run/replay":
+			writeCLIJSON(t, writer, http.StatusAccepted, map[string]any{"accepted": true})
 		case "POST /v1/projects/" + project + "/workflows:copy":
 			writeCLIJSON(t, writer, http.StatusCreated, map[string]any{"workflow": map[string]any{"workflow_id": copyWorkflow}, "draft_revision": map[string]any{"revision_number": 1, "ir": json.RawMessage(validCLIIR("Copied"))}})
 		default:
@@ -83,9 +87,11 @@ func TestM10CLIProductLoopUsesOnlyIRAndStableExternalPaths(t *testing.T) {
 	runCLI(append([]string{"publish", "--workflow", workflow, "--change-log", "M10", "--idempotency-key", "m10-publish-0001"}, base...)...)
 	runCLI(append([]string{"run", "create", "--workflow", workflow, "--input", input, "--deadline", deadline, "--idempotency-key", "m10-run-0001"}, base...)...)
 	runCLI(append([]string{"run", "status", "--run", "production-run"}, base...)...)
+	runCLI(append([]string{"run", "diagnose", "--run", "production-run"}, base...)...)
 	runCLI(append([]string{"run", "cancel", "--run", "production-run"}, base...)...)
+	runCLI(append([]string{"run", "replay", "--run", "production-run", "--event-type", "attempt.lost", "--aggregate-id", "attempt-id"}, base...)...)
 	runCLI(append([]string{"workflow", "copy", "--source-workflow", workflow, "--version", "1", "--name", "Copied", "--idempotency-key", "m10-copy-0001"}, base...)...)
-	if len(paths) != 10 {
+	if len(paths) != 12 {
 		t.Fatalf("paths=%v", paths)
 	}
 }

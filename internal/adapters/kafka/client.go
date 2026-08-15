@@ -3,20 +3,29 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sync"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"github.com/uu999/evalfrog/internal/eventing"
 	"github.com/uu999/evalfrog/internal/platform/config"
 	"github.com/uu999/evalfrog/internal/scheduling"
 )
 
+const consumerRetryBackoff = 200 * time.Millisecond
+
 type Client struct {
 	client        *kgo.Client
 	configuration config.KafkaConfig
 	maxPoll       int
+	group         string
+	topics        []string
 	deliveryMu    sync.Mutex
 	pending       []*kgo.Record
 	outstanding   bool
@@ -65,7 +74,7 @@ func OpenConsumer(value config.KafkaConfig, clientID, group string, topics []con
 	if err != nil {
 		return nil, fmt.Errorf("create Kafka consumer: %w", err)
 	}
-	return &Client{client: client, configuration: value, maxPoll: maxPollRecords}, nil
+	return &Client{client: client, configuration: value, maxPoll: maxPollRecords, group: value.TopicPrefix + "." + group, topics: names}, nil
 }
 
 func (client *Client) Check(ctx context.Context) error {
@@ -73,6 +82,97 @@ func (client *Client) Check(ctx context.Context) error {
 		return fmt.Errorf("Kafka ping: %w", err)
 	}
 	return nil
+}
+
+// ConsumerLag samples the broker end offsets and this Client's committed group
+// offsets. It is intentionally available only for consumer Clients; producers
+// have no consumer-group progress to report.
+func (client *Client) ConsumerLag(ctx context.Context) ([]eventing.ConsumerLag, error) {
+	if client.group == "" || len(client.topics) == 0 {
+		return nil, nil
+	}
+	metadata := kmsg.NewMetadataRequest()
+	metadata.AllowAutoTopicCreation = false
+	for _, name := range client.topics {
+		name := name
+		metadata.Topics = append(metadata.Topics, kmsg.MetadataRequestTopic{Topic: &name})
+	}
+	metadataRaw, err := client.client.Request(ctx, &metadata)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Kafka topic metadata: %w", err)
+	}
+	metadataResponse, ok := metadataRaw.(*kmsg.MetadataResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected Kafka metadata response %T", metadataRaw)
+	}
+	latest := kmsg.NewListOffsetsRequest()
+	committed := kmsg.NewOffsetFetchRequest()
+	committed.Group = client.group
+	for _, topic := range metadataResponse.Topics {
+		if topic.Topic == nil || topic.ErrorCode != 0 {
+			continue
+		}
+		latestTopic := kmsg.ListOffsetsRequestTopic{Topic: *topic.Topic}
+		committedTopic := kmsg.OffsetFetchRequestTopic{Topic: *topic.Topic}
+		for _, partition := range topic.Partitions {
+			if partition.ErrorCode != 0 {
+				continue
+			}
+			latestTopic.Partitions = append(latestTopic.Partitions, kmsg.ListOffsetsRequestTopicPartition{Partition: partition.Partition, Timestamp: -1})
+			committedTopic.Partitions = append(committedTopic.Partitions, partition.Partition)
+		}
+		if len(latestTopic.Partitions) != 0 {
+			latest.Topics = append(latest.Topics, latestTopic)
+			committed.Topics = append(committed.Topics, committedTopic)
+		}
+	}
+	if len(latest.Topics) == 0 {
+		return nil, nil
+	}
+	latestRaw, err := client.client.Request(ctx, &latest)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Kafka end offsets: %w", err)
+	}
+	latestResponse, ok := latestRaw.(*kmsg.ListOffsetsResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected Kafka list offsets response %T", latestRaw)
+	}
+	committedRaw, err := client.client.Request(ctx, &committed)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Kafka committed offsets: %w", err)
+	}
+	committedResponse, ok := committedRaw.(*kmsg.OffsetFetchResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected Kafka offset fetch response %T", committedRaw)
+	}
+	commits := make(map[string]map[int32]int64)
+	for _, topic := range committedResponse.Topics {
+		values := make(map[int32]int64, len(topic.Partitions))
+		for _, partition := range topic.Partitions {
+			if partition.ErrorCode == 0 {
+				values[partition.Partition] = partition.Offset
+			}
+		}
+		commits[topic.Topic] = values
+	}
+	values := make([]eventing.ConsumerLag, 0, len(latestResponse.Topics))
+	for _, topic := range latestResponse.Topics {
+		var lag int64
+		for _, partition := range topic.Partitions {
+			if partition.ErrorCode != 0 || partition.Offset < 0 {
+				continue
+			}
+			offset, exists := commits[topic.Topic][partition.Partition]
+			if !exists || offset < 0 {
+				offset = 0
+			}
+			if partition.Offset > offset {
+				lag += partition.Offset - offset
+			}
+		}
+		values = append(values, eventing.ConsumerLag{Group: client.group, Topic: topic.Topic, Value: lag})
+	}
+	return values, nil
 }
 
 func (client *Client) Close() {
@@ -134,7 +234,10 @@ func (client *Client) Receive(ctx context.Context) (eventing.Delivery, error) {
 		if len(client.pending) == 0 {
 			fetches := client.client.PollRecords(ctx, client.maxPoll)
 			if err := fetches.Err(); err != nil {
-				return nil, fmt.Errorf("poll Kafka record: %w", err)
+				if retryErr := waitForConsumerRetry(ctx, err, consumerRetryBackoff); retryErr != nil {
+					return nil, fmt.Errorf("poll Kafka record: %w", retryErr)
+				}
+				continue
 			}
 			fetches.EachRecord(func(value *kgo.Record) { client.pending = append(client.pending, value) })
 		}
@@ -153,13 +256,61 @@ func (value *delivery) Payload() []byte { return append([]byte(nil), value.recor
 func (value *delivery) Nack()           { value.settle(false) }
 
 func (value *delivery) Ack(ctx context.Context) error {
-	err := value.owner.client.CommitRecords(ctx, value.record)
-	if err != nil {
-		value.settle(false)
-		return fmt.Errorf("commit Kafka record: %w", err)
+	for {
+		err := value.owner.client.CommitRecords(ctx, value.record)
+		if err == nil {
+			value.settle(true)
+			return nil
+		}
+		if retryErr := waitForConsumerRetry(ctx, err, consumerRetryBackoff); retryErr != nil {
+			value.settle(false)
+			return fmt.Errorf("commit Kafka record: %w", retryErr)
+		}
 	}
-	value.settle(true)
-	return nil
+}
+
+// Kafka group coordination and broker transport are deliberately contained in
+// the adapter. A new coordinator, a temporary broker loss, or a group
+// rebalance must not terminate the Engine or a Worker: their durable Inbox,
+// Claim and fencing protocols already make a later delivery safe. Contract and
+// authorization errors remain terminal to expose deployment mistakes promptly.
+func waitForConsumerRetry(ctx context.Context, err error, delay time.Duration) error {
+	if !retryableConsumerError(err) {
+		return err
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryableConsumerError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, kgo.ErrClientClosed) {
+		return false
+	}
+	// Unknown topic is flagged retriable by Kafka because topic creation can be
+	// asynchronous. EvalFrog creates its finite topic set before consumers
+	// start, so seeing it here is a deployment/configuration fault, not a
+	// reason to conceal a permanently unhealthy consumer in an infinite loop.
+	if errors.Is(err, kerr.UnknownTopicOrPartition) || errors.Is(err, kerr.TopicAuthorizationFailed) || errors.Is(err, kerr.GroupAuthorizationFailed) || errors.Is(err, kerr.SaslAuthenticationFailed) || errors.Is(err, kerr.FencedInstanceID) {
+		return false
+	}
+	// These are explicitly non-retriable at the raw request layer because the
+	// caller must join the group again. The franz-go client owns that rejoin, so
+	// a Consumer adapter should wait for the next Poll/commit opportunity rather
+	// than convert an ordinary rebalance into a process restart.
+	if errors.Is(err, kerr.RebalanceInProgress) || errors.Is(err, kerr.IllegalGeneration) || errors.Is(err, kerr.UnknownMemberID) {
+		return true
+	}
+	if kerr.IsRetriable(err) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError)
 }
 
 func (value *delivery) settle(success bool) {

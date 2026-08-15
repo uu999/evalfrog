@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -9,8 +10,14 @@ import (
 )
 
 type Registry struct {
-	prometheus *prometheus.Registry
-	Requests   *prometheus.CounterVec
+	prometheus                  *prometheus.Registry
+	Requests                    *prometheus.CounterVec
+	OutboxOldestAgeSeconds      prometheus.Gauge
+	KafkaConsumerLag            *prometheus.GaugeVec
+	LeaseLostTotal              *prometheus.CounterVec
+	ReadyToQueuedSeconds        prometheus.Observer
+	SchedulingRedisRebuildTotal *prometheus.CounterVec
+	RecoveryWakeupsTotal        *prometheus.CounterVec
 }
 
 func New(service string) *Registry {
@@ -28,8 +35,61 @@ func New(service string) *Registry {
 		Name:      "http_requests_total",
 		Help:      "HTTP requests handled by the M0 process shell.",
 	}, []string{"service", "route", "status"})
-	registry.MustRegister(buildGauge, requests)
-	return &Registry{prometheus: registry, Requests: requests}
+	outboxAge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "evalfrog", Name: "outbox_oldest_unpublished_age_seconds",
+		Help: "Age of the oldest unpublished authoritative Runtime or Task Outbox event.",
+	})
+	kafkaLag := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "evalfrog", Name: "kafka_consumer_lag_records",
+		Help: "Broker end offset minus committed consumer offset, sampled per bounded group and topic.",
+	}, []string{"group", "topic"})
+	leaseLost := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "evalfrog", Name: "attempt_lease_lost_total",
+		Help: "Attempts authoritatively marked lost after lease expiry.",
+	}, []string{"source"})
+	readyToQueued := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "evalfrog", Name: "ready_to_queued_seconds",
+		Help:    "PostgreSQL authority latency from a Node becoming Ready to a dispatched Attempt becoming Queued.",
+		Buckets: prometheus.DefBuckets,
+	})
+	redisRebuild := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "evalfrog", Name: "scheduling_redis_rebuild_total",
+		Help: "Full Scheduling Redis Lane rebuild outcomes; a failure leaves admission fail-closed.",
+	}, []string{"outcome"})
+	recoveryWakeups := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "evalfrog", Name: "runtime_recovery_wakeups_total",
+		Help: "Durable recovery wake-up emission outcomes by bounded scanner and Runtime event type.",
+	}, []string{"source", "event_type", "outcome"})
+	registry.MustRegister(buildGauge, requests, outboxAge, kafkaLag, leaseLost, readyToQueued, redisRebuild, recoveryWakeups)
+	return &Registry{prometheus: registry, Requests: requests, OutboxOldestAgeSeconds: outboxAge,
+		KafkaConsumerLag: kafkaLag, LeaseLostTotal: leaseLost, ReadyToQueuedSeconds: readyToQueued,
+		SchedulingRedisRebuildTotal: redisRebuild, RecoveryWakeupsTotal: recoveryWakeups}
+}
+
+func (registry *Registry) ObserveOutboxOldestAge(value time.Duration) {
+	registry.OutboxOldestAgeSeconds.Set(value.Seconds())
+}
+
+func (registry *Registry) ObserveKafkaConsumerLag(group, topic string, value int64) {
+	registry.KafkaConsumerLag.WithLabelValues(group, topic).Set(float64(max(value, 0)))
+}
+
+func (registry *Registry) ObserveLeaseLost(source string) {
+	registry.LeaseLostTotal.WithLabelValues(source).Inc()
+}
+
+func (registry *Registry) ObserveReadyToQueued(value time.Duration) {
+	if value >= 0 {
+		registry.ReadyToQueuedSeconds.Observe(value.Seconds())
+	}
+}
+
+func (registry *Registry) ObserveSchedulingRedisRebuild(outcome string) {
+	registry.SchedulingRedisRebuildTotal.WithLabelValues(outcome).Inc()
+}
+
+func (registry *Registry) ObserveRecoveryWakeup(source, eventType, outcome string) {
+	registry.RecoveryWakeupsTotal.WithLabelValues(source, eventType, outcome).Inc()
 }
 
 func (registry *Registry) Handler() http.Handler {

@@ -83,6 +83,7 @@ func TestValidateCapacityConstraints(t *testing.T) {
 		{"consumer partitions", func(value *Config) { value.Worker.ExpectedBuiltinConsumers = 2 }, "partitions"},
 		{"database budget", func(value *Config) { value.Postgres.ExpectedControlPlaneInstances = 100 }, "70% safety budget"},
 		{"inbox retention", func(value *Config) { value.Outbox.InboxRetention = Duration(time.Hour) }, "inbox_retention"},
+		{"recovery scanner interval", func(value *Config) { value.Outbox.ReconcilerInterval = 0 }, "recovery timer, deadline scanner and reconciler intervals"},
 		{"sandbox runtime", func(value *Config) { value.Sandbox.Runtime = "unsafe" }, "sandbox runtime"},
 	}
 	for _, test := range tests {

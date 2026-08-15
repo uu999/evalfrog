@@ -154,10 +154,11 @@ type resourceRequest struct {
 }
 
 type leaseResponse struct {
-	LeaseToken   string    `json:"lease_token"`
-	Owner        string    `json:"owner"`
-	FencingToken uint64    `json:"fencing_token"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	LeaseToken      string    `json:"lease_token"`
+	Owner           string    `json:"owner"`
+	FencingToken    uint64    `json:"fencing_token"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	CancelRequested bool      `json:"cancel_requested"`
 }
 
 func (handler *Handler) claim(writer http.ResponseWriter, request *http.Request) {
@@ -178,7 +179,7 @@ func (handler *Handler) claim(writer http.ResponseWriter, request *http.Request)
 	if writeDomainError(writer, err) {
 		return
 	}
-	writeJSON(writer, http.StatusOK, leaseResponse{lease.Token, lease.Owner, lease.FencingToken, lease.ExpiresAt})
+	writeJSON(writer, http.StatusOK, leaseResponse{lease.Token, lease.Owner, lease.FencingToken, lease.ExpiresAt, lease.CancelRequested})
 }
 
 func (handler *Handler) heartbeat(writer http.ResponseWriter, request *http.Request) {
@@ -194,7 +195,7 @@ func (handler *Handler) heartbeat(writer http.ResponseWriter, request *http.Requ
 	if writeDomainError(writer, err) {
 		return
 	}
-	writeJSON(writer, http.StatusOK, leaseResponse{lease.Token, lease.Owner, lease.FencingToken, lease.ExpiresAt})
+	writeJSON(writer, http.StatusOK, leaseResponse{lease.Token, lease.Owner, lease.FencingToken, lease.ExpiresAt, lease.CancelRequested})
 }
 
 func (handler *Handler) complete(writer http.ResponseWriter, request *http.Request) {

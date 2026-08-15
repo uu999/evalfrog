@@ -3,7 +3,7 @@ package runtime
 func validRunTransition(from, to RunState) bool {
 	switch from {
 	case RunPending:
-		return to == RunRunning || to == RunCanceled
+		return to == RunRunning || to == RunCanceled || to == RunTimedOut
 	case RunRunning:
 		return to == RunSucceeded || to == RunFailed || to == RunCanceled || to == RunTimedOut
 	default:

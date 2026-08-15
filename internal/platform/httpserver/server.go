@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,8 +109,31 @@ func (server *Server) observe(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: writer, status: http.StatusOK}
 		next.ServeHTTP(recorder, request)
-		server.metrics.Requests.WithLabelValues(server.service, request.URL.Path, strconv.Itoa(recorder.status)).Inc()
+		server.metrics.Requests.WithLabelValues(server.service, metricRoute(request.URL.Path), strconv.Itoa(recorder.status)).Inc()
 	})
+}
+
+// metricRoute removes tenant and execution identifiers before they become a
+// Prometheus label. A raw URL path would create one time series per Project,
+// Run or Workflow and eventually make the observability system unhealthy.
+func metricRoute(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for index := 0; index+1 < len(parts); index++ {
+		switch parts[index] {
+		case "projects":
+			parts[index+1] = "{project_id}"
+		case "workflows":
+			parts[index+1] = "{workflow_id}"
+		case "runs":
+			parts[index+1] = "{run_id}"
+		case "versions":
+			parts[index+1] = "{version_number}"
+		}
+	}
+	if len(parts) == 0 || parts[0] == "" {
+		return "/"
+	}
+	return "/" + strings.Join(parts, "/")
 }
 
 type statusRecorder struct {

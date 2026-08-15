@@ -48,6 +48,8 @@ type Application interface {
 	CreateRun(context.Context, workflowapp.CreateRunCommand) (runtime.WorkflowRunRecord, error)
 	CancelRun(context.Context, string, string, string, string) (runtime.WorkflowRunRecord, bool, error)
 	GetRun(context.Context, string, string, string) (projection.RunView, error)
+	GetDiagnostics(context.Context, string, string, string) (projection.DiagnosticView, error)
+	ReplayRun(context.Context, string, string, string, string, string, string) (bool, error)
 	NodeTypes() []catalog.NodeDescription
 	Connections(context.Context, string, string) ([]resources.ConnectionSummary, error)
 }
@@ -76,6 +78,8 @@ func New(authenticator Authenticator, application Application, updates ...RunUpd
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/versions/{version_number}/activate", handler.rollback)
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/workflows/{workflow_id}/runs", handler.createRun)
 	handler.router.HandleFunc("GET /v1/projects/{project_id}/runs/{run_id}", handler.getRun)
+	handler.router.HandleFunc("GET /v1/projects/{project_id}/runs/{run_id}/diagnostics", handler.getDiagnostics)
+	handler.router.HandleFunc("POST /v1/projects/{project_id}/runs/{run_id}/replay", handler.replayRun)
 	handler.router.HandleFunc("GET /v1/projects/{project_id}/runs/{run_id}/events", handler.runEvents)
 	handler.router.HandleFunc("POST /v1/projects/{project_id}/runs/{run_id}/cancel", handler.cancelRun)
 	handler.router.HandleFunc("GET /v1/node-types", handler.nodeTypes)
@@ -313,6 +317,49 @@ func (handler *Handler) getRun(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	writeJSON(writer, http.StatusOK, run)
+}
+
+func (handler *Handler) getDiagnostics(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	value, err := handler.application.GetDiagnostics(request.Context(), request.PathValue("project_id"), principal.ID, request.PathValue("run_id"))
+	if handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	writeJSON(writer, http.StatusOK, value)
+}
+
+// replayRun never accepts an arbitrary message payload. It asks the authority
+// to re-emit one currently actionable Runtime fact, which preserves the Engine
+// Inbox/CAS ownership even when an operator is recovering an incident.
+func (handler *Handler) replayRun(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	var body struct {
+		EventType   string `json:"event_type"`
+		AggregateID string `json:"aggregate_id"`
+	}
+	if !handler.decode(writer, request, &body) {
+		return
+	}
+	if body.EventType == "" || body.AggregateID == "" {
+		handler.writeError(writer, request, http.StatusBadRequest, definition.CodeInvalidArgument, "event_type and aggregate_id are required", nil)
+		return
+	}
+	accepted, err := handler.application.ReplayRun(request.Context(), request.PathValue("project_id"), principal.ID,
+		request.PathValue("run_id"), body.EventType, body.AggregateID, traceid.From(request.Context()))
+	if handler.writeResultError(writer, request, nil, err) {
+		return
+	}
+	status := http.StatusOK
+	if accepted {
+		status = http.StatusAccepted
+	}
+	writeJSON(writer, status, map[string]any{"accepted": accepted})
 }
 
 // runEvents is a lossy SSE wake-up channel. It never carries Runtime state;

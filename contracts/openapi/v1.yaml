@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: EvalFrog External API
-  version: 1.0.0-m10
+  version: 1.0.0-m11
   description: Human Web and Agent CLI share this complete authoring and runtime command API.
 servers:
   - url: /
@@ -198,6 +198,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RunView' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/runs/{run_id}/diagnostics:
+    get:
+      operationId: getRunDiagnostics
+      description: Safe operational metadata only; inputs, outputs, lease tokens and executor logs are excluded.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Current Run, Attempt and safe Audit diagnostics derived from PostgreSQL.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunDiagnostics' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/projects/{project_id}/runs/{run_id}/events:
     get:
       operationId: subscribeRunUpdates
@@ -221,6 +235,22 @@ paths:
       responses:
         '202': { $ref: '#/components/responses/CancelAccepted' }
         '200': { $ref: '#/components/responses/CancelAccepted' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/projects/{project_id}/runs/{run_id}/replay:
+    post:
+      operationId: replayRunWakeup
+      description: Project administrators may re-emit a current Runtime wake-up. Arbitrary Kafka payload injection is not supported.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/RunID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayRunRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/ReplayAccepted' }
+        '200': { $ref: '#/components/responses/ReplayAccepted' }
         default: { $ref: '#/components/responses/Error' }
   /v1/node-types:
     get:
@@ -429,6 +459,51 @@ components:
         nodes:
           type: array
           items: { $ref: '#/components/schemas/RunNodeView' }
+    AttemptDiagnostic:
+      type: object
+      required: [attempt_id, execution_node_id, sequence, kind, state, created_at, updated_at]
+      properties:
+        attempt_id: { type: string, format: uuid }
+        execution_node_id: { type: string }
+        sequence: { type: integer, minimum: 1 }
+        kind: { type: string, enum: [business, recovery] }
+        state: { type: string }
+        lease_owner: { type: string }
+        lease_expires_at: { type: string, format: date-time }
+        error_code: { type: string }
+        dsl_field: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AuditDiagnostic:
+      type: object
+      required: [action, actor_type, actor_id, trace_id, details, created_at]
+      properties:
+        action: { type: string }
+        actor_type: { type: string, enum: [principal, system] }
+        actor_id: { type: string }
+        trace_id: { type: string }
+        details: { type: object }
+        created_at: { type: string, format: date-time }
+    RunDiagnostics:
+      type: object
+      required: [run, attempts, audit]
+      properties:
+        run: { $ref: '#/components/schemas/RunView' }
+        attempts:
+          type: array
+          items: { $ref: '#/components/schemas/AttemptDiagnostic' }
+        audit:
+          type: array
+          items: { $ref: '#/components/schemas/AuditDiagnostic' }
+    ReplayRunRequest:
+      type: object
+      required: [event_type, aggregate_id]
+      additionalProperties: false
+      properties:
+        event_type:
+          type: string
+          enum: [run.created, run.cancel_requested, attempt.completed, attempt.lost, retry.due, run.deadline_reached]
+        aggregate_id: { type: string, format: uuid }
     ConnectionSummary:
       type: object
       required: [connection_id, reference, enabled, resource_revision]
@@ -483,6 +558,16 @@ components:
             required: [run, accepted]
             properties:
               run: { $ref: '#/components/schemas/RunRecord' }
+              accepted: { type: boolean }
+    ReplayAccepted:
+      description: Replay accepted or no longer actionable. A successful request emits a durable Runtime Outbox wake-up and Audit fact.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [accepted]
+            additionalProperties: false
+            properties:
               accepted: { type: boolean }
     Error:
       description: Stable machine-readable error envelope.

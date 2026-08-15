@@ -53,6 +53,10 @@ func (service *RuntimeConsumerService) Run(ctx context.Context) error {
 			continue
 		}
 		if err = service.handler.Consume(ctx, event); err != nil {
+			service.logger.Warn("runtime event processing deferred", "component", service.Name(),
+				"event_type", event.EventType, "project_id", event.ProjectID,
+				"run_id", event.RunID, "aggregate_id", event.AggregateID,
+				"trace_id", event.TraceID, "error", err)
 			delivery.Nack()
 			return err
 		}

@@ -27,6 +27,7 @@ func (store *Store) LoadSchedulingSnapshot(ctx context.Context, candidateWindow 
 			  FROM node_runs n
 			  JOIN workflow_runs r ON r.project_id=n.project_id AND r.run_id=n.run_id
 			  WHERE n.state='ready' AND r.state='running' AND r.termination_intent_json IS NULL
+			    AND r.deadline_at > clock_timestamp()
 			  GROUP BY n.project_id
 			)
 			SELECT candidate.project_id::text, candidate.run_id::text, candidate.node_run_id::text,
@@ -40,6 +41,7 @@ func (store *Store) LoadSchedulingSnapshot(ctx context.Context, candidateWindow 
 			  JOIN workflow_runs r ON r.project_id=n.project_id AND r.run_id=n.run_id
 			  WHERE n.project_id=project.project_id AND n.state='ready'
 			    AND r.state='running' AND r.termination_intent_json IS NULL
+			    AND r.deadline_at > clock_timestamp()
 			  ORDER BY n.priority DESC, n.ready_at, n.node_run_id
 			  LIMIT $1
 			) candidate
@@ -103,8 +105,8 @@ func (store *Store) DispatchReady(ctx context.Context, command scheduling.Dispat
 	if err := command.Candidate.Validate(); err != nil {
 		return scheduling.Task{}, err
 	}
-	if command.AttemptID == "" || command.TaskID == "" || command.TraceID == "" || command.Now.IsZero() {
-		return scheduling.Task{}, fmt.Errorf("dispatch attempt, task, trace and time are required")
+	if command.AttemptID == "" || command.TaskID == "" || command.Now.IsZero() {
+		return scheduling.Task{}, fmt.Errorf("dispatch attempt, task and time are required")
 	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -117,23 +119,25 @@ func (store *Store) DispatchReady(ctx context.Context, command scheduling.Dispat
 	var nextRetry *time.Time
 	var coordinate dsl.Coordinate
 	var persistedClass scheduling.ResourceClass
+	var runTraceID string
 	err = tx.QueryRow(ctx, `
 		SELECT n.run_id::text, n.execution_node_id, n.kind, n.state, n.state_version,
 		       n.activated, n.selected_route, n.resolved_inputs_json,
 		       n.current_attempt_id::text, n.effective_attempt_id::text,
 		       n.next_attempt_seq, n.business_attempt_count, n.recovery_count,
 		       n.next_attempt_kind, n.next_retry_at, n.failure_json, n.cancel_reason,
-		       n.operation_type, n.operation_version, n.resource_class
+		       n.operation_type, n.operation_version, n.resource_class, r.trace_id
 		FROM node_runs n
 		JOIN workflow_runs r ON r.project_id=n.project_id AND r.run_id=n.run_id
 		WHERE n.project_id=$1 AND n.run_id=$2 AND n.node_run_id=$3
 		  AND r.state='running' AND r.termination_intent_json IS NULL
+		  AND r.deadline_at > clock_timestamp()
 		FOR UPDATE OF n`, command.Candidate.ProjectID, command.Candidate.RunID, command.Candidate.NodeRunID).
 		Scan(&record.RunID, &record.ExecutionNodeID, &record.Kind, &record.State, &record.StateVersion,
 			&record.Activated, &record.SelectedRoute, &resolvedInputs, &current, &effective,
 			&record.NextAttemptSeq, &record.BusinessAttemptCount, &record.RecoveryCount,
 			&record.NextAttemptKind, &nextRetry, &failure, &record.CancelReason,
-			&coordinate.Type, &coordinate.Version, &persistedClass)
+			&coordinate.Type, &coordinate.Version, &persistedClass, &runTraceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return scheduling.Task{}, scheduling.ErrCandidateStale
 	}
@@ -208,9 +212,9 @@ func (store *Store) DispatchReady(ctx context.Context, command scheduling.Dispat
 			task_id, project_id, run_id, node_run_id, execution_node_id,
 			attempt_id, attempt_seq, resource_class, message_version,
 			occurred_at, trace_id, available_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,$9,$10,$9)`, command.TaskID,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,$9,$10,clock_timestamp())`, command.TaskID,
 		command.Candidate.ProjectID, record.RunID, command.Candidate.NodeRunID,
-		record.ExecutionNodeID, command.AttemptID, sequence, class, command.Now, command.TraceID)
+		record.ExecutionNodeID, command.AttemptID, sequence, class, command.Now, runTraceID)
 	if err != nil {
 		return scheduling.Task{}, err
 	}
@@ -221,7 +225,7 @@ func (store *Store) DispatchReady(ctx context.Context, command scheduling.Dispat
 		ProjectID: command.Candidate.ProjectID, RunID: record.RunID,
 		NodeRunID: command.Candidate.NodeRunID, ExecutionNodeID: record.ExecutionNodeID,
 		AttemptID: command.AttemptID, AttemptSequence: sequence, ResourceClass: class,
-		OccurredAt: command.Now, TraceID: command.TraceID}, nil
+		OccurredAt: command.Now, TraceID: runTraceID}, nil
 }
 
 var _ scheduling.Authority = (*Store)(nil)

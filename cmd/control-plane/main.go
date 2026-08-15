@@ -109,10 +109,11 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	mustRegister(logger, readiness, "redis-cache", cacheClient.Check)
 	mustRegister(logger, readiness, "redis-scheduling", schedulingClient.Check)
 	mustRegister(logger, readiness, "kafka", kafkaClient.Check)
+	metricRegistry := metrics.New(serviceName)
 	server := httpserver.New(
 		serviceName, configuration.HTTP.ControlPlaneAddress,
 		configuration.HTTP.ReadHeaderTimeout.Duration(), configuration.HTTP.IdleTimeout.Duration(),
-		logger, readiness, metrics.New(serviceName),
+		logger, readiness, metricRegistry,
 	)
 	store := postgres.NewStore(postgresClient.Pool())
 	store.SetRunViewInvalidator(cacheClient)
@@ -124,7 +125,13 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	runReader := projection.NewCachedService(projection.NewBuiltinService(store, accessService), cacheClient,
 		configuration.Cache.ActiveRunReadModelTTL.Duration(), configuration.Cache.TerminalRunReadModelTTL.Duration())
 	connectionDirectory := resources.NewBuiltinConnectionDirectory(store, accessService)
-	application, err := workflowapp.New(definitionService, runCreator, runControl, runReader, catalog.BuiltinV1(), connectionDirectory)
+	recoveryEmitter := recovery.NewBuiltinEmitter(store)
+	manualReplayer, err := recovery.NewManualReplayer(store, recoveryEmitter, accessService)
+	if err != nil {
+		logger.Error("manual recovery replay construction failed", "error", err)
+		return 1
+	}
+	application, err := workflowapp.New(definitionService, runCreator, runControl, runReader, catalog.BuiltinV1(), connectionDirectory, manualReplayer)
 	if err != nil {
 		logger.Error("workflow application construction failed", "error", err)
 		return 1
@@ -151,7 +158,7 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 			Epoch: configuration.Scheduler.Epoch.Duration(), ActiveProjectTTL: configuration.Scheduler.ActiveProjectTTL.Duration(),
 			BalancerLease: configuration.Scheduler.ActiveProjectTTL.Duration(), ReservationTTL: configuration.Scheduler.InflightReservationTTL.Duration(),
 			DispatchBufferFactor: configuration.Scheduler.DispatchBufferFactor, CapacityChangeLimit: configuration.Scheduler.EpochCapacityChangeLimit,
-		})
+		}, metricRegistry)
 	if err != nil {
 		logger.Error("scheduler construction failed", "error", err)
 		return 1
@@ -192,6 +199,11 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 		return 1
 	}
 	defer runtimeKafka.Close()
+	kafkaLagService, err := eventing.NewConsumerLagService(runtimeKafka, metricRegistry, configuration.Outbox.ReconcilerInterval.Duration(), logger)
+	if err != nil {
+		logger.Error("Kafka lag observer construction failed", "error", err)
+		return 1
+	}
 	engineConsumer, err := engine.NewConsumer(store)
 	if err != nil {
 		logger.Error("engine consumer construction failed", "error", err)
@@ -204,13 +216,36 @@ func run(ctx context.Context, arguments []string, output, errorOutput io.Writer)
 	}
 	recoveryGrace := configuration.Worker.LostAfter.Duration() - configuration.Worker.LeaseDuration.Duration()
 	reaper, err := recovery.NewReaper(store, attemptCoordinator, recoveryGrace,
-		configuration.Worker.RecoveryScannerInterval.Duration(), configuration.Outbox.ScanBatch, "reaper-"+schedulerID, logger)
+		configuration.Worker.RecoveryScannerInterval.Duration(), configuration.Outbox.ScanBatch, "reaper-"+schedulerID, logger, metricRegistry)
 	if err != nil {
 		logger.Error("attempt reaper construction failed", "error", err)
 		return 1
 	}
+	retryTimer, err := recovery.NewRetryTimer(store, recoveryEmitter, configuration.Outbox.RetryTimerInterval.Duration(),
+		configuration.Outbox.ScanBatch, "retry-timer-"+schedulerID, logger, metricRegistry)
+	if err != nil {
+		logger.Error("retry timer construction failed", "error", err)
+		return 1
+	}
+	deadlineScanner, err := recovery.NewDeadlineScanner(store, recoveryEmitter, configuration.Outbox.DeadlineScannerInterval.Duration(),
+		configuration.Outbox.ScanBatch, "deadline-scanner-"+schedulerID, logger, metricRegistry)
+	if err != nil {
+		logger.Error("deadline scanner construction failed", "error", err)
+		return 1
+	}
+	reconciler, err := recovery.NewReconciler(store, recoveryEmitter, configuration.Outbox.ReconcilerInterval.Duration(),
+		configuration.Outbox.ScanBatch, "runtime-reconciler-"+schedulerID, logger, metricRegistry)
+	if err != nil {
+		logger.Error("runtime reconciler construction failed", "error", err)
+		return 1
+	}
+	outboxAgeService, err := eventing.NewOutboxAgeService(store, metricRegistry, configuration.Outbox.ActivePoll.Duration(), logger)
+	if err != nil {
+		logger.Error("outbox age observer construction failed", "error", err)
+		return 1
+	}
 	if err := lifecycle.Run(ctx, configuration.Shutdown.Timeout.Duration(), logger, server, schedulerService,
-		runtimeRelayService, taskRelayService, runtimeConsumerService, reaper); err != nil {
+		runtimeRelayService, taskRelayService, runtimeConsumerService, reaper, retryTimer, deadlineScanner, reconciler, outboxAgeService, kafkaLagService); err != nil {
 		logger.Error("control plane stopped with error", "error", err)
 		return 1
 	}
