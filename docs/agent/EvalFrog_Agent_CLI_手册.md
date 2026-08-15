@@ -8,6 +8,28 @@ Agent 手拼 DSL 或绕过平台的版本、权限和运行时边界。
 > 接受 Canonical JSON IR；DSL、Source Map、Execution Snapshot 都由服务端在
 > 校验和编译后生成，客户端永远不能上传或修改它们。
 
+## 0. 为本地 Agent 安装 Skill
+
+`skills/evalfrog-workflow/` 是可随仓库分发的 Agent Skill，不是另一套平台
+API。它以短小的 `SKILL.md` 作为执行入口，并将发现、IR 创作、Definition
+生命周期和 Run 操作拆入 `references/`；因此后续增加节点或运行能力时，只需要
+扩展对应场景参考，而不会让每个 Agent 每次都加载一份不断膨胀的总指南。
+
+在包含该目录的仓库根目录执行以下命令，即可把整个 Skill 安装至本机 Codex 默认
+发现目录（`$CODEX_HOME/skills`，未设置时为 `~/.codex/skills`）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\skills\evalfrog-workflow\scripts\install.ps1
+```
+
+```bash
+./skills/evalfrog-workflow/scripts/install.sh
+```
+
+如果同名 Skill 已存在，安装器不会静默覆盖；确认升级后显式附加 `-Force`（PowerShell）
+或 `--force`（bash）。安装完成后，本地 Agent 可按 `$evalfrog-workflow` 引用该
+Skill，或由其元数据在涉及 EvalFrog Workflow/IR/CLI 操作时自动匹配。
+
 ## 1. Agent 的职责与操作边界
 
 Agent 应当作为执行者：理解用户目标、生成或修改 IR、调用 CLI、解释校验与

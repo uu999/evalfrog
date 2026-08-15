@@ -374,6 +374,7 @@ Infrastructure Adapter
 - [Control Graph 语义](./docs/architecture/decisions/04_ControlGraph语义基线.md)
 - [项目实施计划与验收标准](./docs/plans/项目实施计划与验收标准.md)
 - [Agent CLI 操作手册](./docs/agent/EvalFrog_Agent_CLI_手册.md)
+- [可安装的 EvalFrog Workflow Agent Skill](./skills/evalfrog-workflow/SKILL.md)
 
 ## 第一阶段不做什么
 
