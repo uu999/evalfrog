@@ -28,12 +28,12 @@ the exact commands and the current CLI limitations.
 
 ## Select the right workflow
 
-- **New Workflow:** derive a concise graph brief, generate a complete IR file,
-  validate it locally through `workflow create`, then create the Draft only
-  after user confirmation.
-- **Edit an existing Draft:** always `workflow pull` first, preserve the latest
-  Draft Revision, make the smallest complete-IR change, then push and validate.
-- **Reuse a published Workflow:** use `workflow copy` with the supplied source
+- **New Workflow:** derive a concise graph brief, `builder init` a local Session,
+  add Nodes/Edges/Inputs/Bindings in small steps, run `builder check`, then
+  create the Draft only after user confirmation.
+- **Edit an existing Draft:** always `builder pull` first, preserve the latest
+  Draft Revision, make the smallest Session change, then push and validate.
+- **Reuse a published Workflow:** use `builder copy` with the supplied source
   Workflow ID and immutable Version number; never modify the source Version.
 - **Test / publish / production run:** distinguish Draft Test from Production
   Run. Publish automatically activates the new immutable Version. A Production
@@ -46,9 +46,11 @@ for create, Pull, Copy, Push, Validate, and Publish. Read
 
 ## Apply write and concurrency rules
 
-Treat the following as writes requiring explicit confirmation: `workflow
-create`, `workflow copy`, `draft push`, `run test`, `publish`, `run create`,
-`run cancel`, and `run replay`.
+Treat the following platform writes as requiring explicit confirmation:
+`workflow builder create|copy|push`, `workflow create`, `workflow copy`,
+`draft push`, `run test`, `publish`, `run create`, `run cancel`, and `run
+replay`. Local Builder Session mutations only change the explicitly selected
+local Session; do not represent them as a server-side save.
 
 Before confirmation, state the target Project/Workflow, intended semantic
 change, whether external HTTP/RPC or sandbox code may execute, and whether a
@@ -70,7 +72,8 @@ then Push with a new key. Never overwrite the revision optimistically.
 - Use semantic Node and Edge IDs. Treat a diagnostic's logical node, edge, and
   IR field path as the repair location.
 - Treat the local CLI Workspace as a concurrency helper, not Definition
-  authority. Keep the agent's intended full IR in an explicit task file.
+  authority. Use Builder Session `ir.json + meta.json` for local incremental
+  edits; `push` still submits one complete IR plus its expected Draft Revision.
 - Keep status polling bounded. Return the Run ID and latest observed state if
   it has not reached a terminal state within the agreed window.
 

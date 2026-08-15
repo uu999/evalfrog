@@ -98,10 +98,12 @@ func (app App) workspaceRoot() string {
 
 func (app App) workflow(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(app.Error, "usage: evalfrog workflow <create|pull|copy> ...")
+		fmt.Fprintln(app.Error, "usage: evalfrog workflow <create|pull|copy|builder> ...")
 		return 2
 	}
 	switch arguments[0] {
+	case "builder":
+		return app.builder(ctx, arguments[1:])
 	case "create":
 		flags := flag.NewFlagSet("workflow create", flag.ContinueOnError)
 		flags.SetOutput(app.Error)
@@ -215,7 +217,7 @@ func (app App) workflow(ctx context.Context, arguments []string) int {
 		fmt.Fprintf(app.Output, "workflow copied: %s revision=%d\n", response.Workflow.ID, response.Draft.Revision)
 		return 0
 	default:
-		fmt.Fprintln(app.Error, "usage: evalfrog workflow <create|pull|copy> ...")
+		fmt.Fprintln(app.Error, "usage: evalfrog workflow <create|pull|copy|builder> ...")
 		return 2
 	}
 }
@@ -622,4 +624,5 @@ func (app App) doctor(ctx context.Context, arguments []string) int {
 
 func (app App) usage() {
 	fmt.Fprintln(app.Error, "usage: evalfrog <workflow|draft|publish|run|node-type|connection|version|config validate|doctor>")
+	fmt.Fprintln(app.Error, "workflow supports create|pull|copy|builder")
 }

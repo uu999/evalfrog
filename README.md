@@ -394,7 +394,7 @@ M0-M11 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、
 ### M10 Product Core Loop
 
 - 所有 Authoring 请求只传 Canonical JSON IR；DSL、Source Map 与 Execution Snapshot 由服务器内部生成，不提供上传或客户端依赖入口；
-- CLI 支持 `workflow create|pull|copy`、`draft push|validate`、`publish`、`run test|create|status|cancel`、`node-type list` 与 `connection list`；
+- CLI 支持 `workflow create|pull|copy`、`draft push|validate`、`workflow builder` 小步 Session 编辑、`publish`、`run test|create|status|cancel`、`node-type list` 与 `connection list`；
 - `web/` 提供独立静态 Canvas：加载 Draft、编辑 IR Node/Edge/Input、拖拽布局、保存/校验/测试/发布/正式运行/取消；
 - Run 状态由 PostgreSQL 投影，Cache Redis 只做 Cache-Aside；SSE/PubSub 只传“重新读取”通知，断线或丢消息后重新 GET Run 即恢复；
 - Runtime Failure 通过不可变 Snapshot 的 Source Map 回到 IR Node、Edge 和字段路径。

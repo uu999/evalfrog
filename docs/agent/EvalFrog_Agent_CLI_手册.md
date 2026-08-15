@@ -39,14 +39,16 @@ Agent 应当作为执行者：理解用户目标、生成或修改 IR、调用 C
 
 1. 先确认连接上下文，再执行具体任务；没有 `server`、`project` 或 `token`
    时，向用户索取，不能猜测或扫描凭证。
-2. 先读后写。编辑已有 Workflow 前必须 `workflow pull`；需要复用时，已知
-   Workflow ID 与 Published Version 后优先 `workflow copy`。
+2. 先读后写。编辑已有 Workflow 前必须 `workflow builder pull --session <目录>`；
+   需要复用时，已知 Workflow ID 与 Published Version 后优先
+   `workflow builder copy --session <新目录>`。旧命令仅作为完整 IR 兼容路径。
 3. 创建、复制、保存 Draft、测试运行、发布、正式运行、取消和恢复请求都会
    改变平台状态；执行前必须向用户说明目标与影响并取得确认。
 4. 每次写请求使用新的、语义唯一的 `idempotency-key`。网络重试同一个请求时
    复用原 key；请求内容或意图变化时必须换新 key。
-5. 每次 IR 修改后先做服务端 `draft validate`。只有 `valid=true` 才能测试或
-   发布；本地快速校验不能代替服务端校验。
+5. Builder Session 内每次形成一组修改后先执行 `workflow builder check`；确认要保存
+   后再 `workflow builder push` 和 `workflow builder validate`。只有服务端
+   `valid=true` 才能测试或发布；本地快速校验不能代替服务端校验。
 6. 不把 API Token、HTTP Connection 的凭证、RPC 服务端点或运行输入/输出写进
    对话摘要、日志、IR 或代码。IR 只引用 `connection_ref` / `service_ref`。
 7. 不进行无界轮询。查询 Run 时使用有限次数和退避；超过等待窗口后把 Run ID
@@ -56,9 +58,9 @@ Agent 应当作为执行者：理解用户目标、生成或修改 IR、调用 C
 
 | 目标 | 已实现 CLI | Agent 处理方式 |
 |---|---|---|
-| 创建新 Workflow | `workflow create` | 传完整 IR，创建 Draft Revision 1 |
-| 读取 / 编辑 Draft | `workflow pull`、`draft push` | Pull 保存本地 Workspace，再以完整 IR Push |
-| 复用已发布流程 | `workflow copy` | 从指定不可变 Published Version 创建新 Draft |
+| Agent 创建 / 小步编辑 Workflow | `workflow builder ...` | 本地 Session 内增删 Node/Edge、配置 Input、Binding、Output 与 Layout；最终完整 IR Push |
+| 完整 IR 兼容创建 / 编辑 | `workflow create`、`workflow pull`、`draft push` | 仅用于导入或已持有完整 IR 文件的场景 |
+| 复用已发布流程 | `workflow builder copy` | 从指定不可变 Published Version 创建新 Draft，并落入新 Session |
 | 结构、Catalog、资源校验 | `draft validate` | 读取结构化诊断并修复 IR |
 | Draft 测试 | `run test` | 执行当前 Draft Revision 的不可变测试快照 |
 | 发布与正式运行 | `publish`、`run create` | Publish 自动激活新 Version；正式 Run 只执行激活发布版本 |
@@ -78,6 +80,11 @@ Agent 应当作为执行者：理解用户目标、生成或修改 IR、调用 C
 CLI 的成功输出混合为简洁文本和 JSON：创建/保存/发布输出摘要，`run status`、
 `run diagnose`、目录查询输出 JSON。Agent 应根据命令语义解析所需的 ID，不应
 假定存在统一 JSON envelope。
+
+`workflow builder` 是 Agent 的首选 Authoring 路径。它在显式目录中维护
+`ir.json + meta.json`：局部命令只改该 Session，`create` / `push` 仍按当前
+Revision 向同一 External API 提交完整 IR。它不保存 Token，也不生成 DSL；因此
+改善 Agent 的增量编辑体验，但不改变 Draft、Compiler 或 Runtime 的权威边界。
 
 ## 3. 启动前检查
 
@@ -126,12 +133,13 @@ literal/ref 来源限制、输出约束及示例。不要在 IR 中写 DSL Opera
 Connection 不在列表中，应请用户或管理员完成授权/配置，不能伪造
 `connection_ref`。
 
-当前 CLI 的本地 Workspace 只用于保存最近一次 Pull/Save 的 Draft Revision 与 IR，
-以支持乐观锁；它不是服务端 Definition 的权威副本，也还没有 `pull --out` 导出
-参数。因此 Agent 应把待编辑的完整 IR 保存在明确的任务文件（如
-`workflow.ir.json`）中。首次创建或 Copy 后可直接保留该文件；编辑他人已有
-Workflow 时，先 Pull 以更新 Revision，再从本地 Workspace 记录的 `ir` 字段恢复
-到任务文件，或请用户提供当前 IR。不要依赖临时内存中的旧 IR 做覆盖式 Push。
+旧的 `workflow pull` 本地 Workspace 只用于保存最近一次 Pull/Save 的 Draft
+Revision 与 IR，以支持乐观锁；它不是服务端 Definition 的权威副本，也没有
+`pull --out` 导出参数。需要编辑已有 Draft 时，Agent 应优先使用
+`workflow builder pull --session <目录>`：该命令会把当前 Draft 明确写入 Session
+中的 `ir.json`，并保存对应 Revision。完整 IR 直传的兼容路径仍应把待编辑 IR
+保存在明确任务文件（如 `workflow.ir.json`）中，不能依赖临时内存中的旧 IR 做
+覆盖式 Push。
 
 ## 4. IR 创作规范
 
@@ -244,8 +252,29 @@ Node Type 差异仅出现在各自的 Input 名称与约束中：
 
 ## 5. Agent 的标准执行流程
 
-以下示例假定 Agent 已将完整 IR 写入 `workflow.ir.json`，并已取得用户对相应
-写操作的确认。
+正常情况下，Agent 应使用 `workflow builder` 进行小步构建、Copy 后修改和现有
+Draft 编辑；完整 IR 直传仅保留给已持有完整 IR 文件的兼容/导入场景。Builder 的
+Session 命令、`check` 与 `preview` 见安装后 Skill 的
+`references/definition-lifecycle.md`，或直接使用：
+
+```powershell
+& $EF workflow builder init --session .\order.session
+& $EF workflow builder add-node --session .\order.session --id start --type start --title '开始'
+& $EF workflow builder check --session .\order.session
+
+# 获得用户确认后，才创建服务端 Draft；响应 data 中带 workflow_id 与 revision。
+$createKey = 'create-order-normalizer-20260815-001'
+& $EF workflow builder create --session .\order.session `
+  --server $env:EF_SERVER --token $env:EF_TOKEN --project $env:EF_PROJECT `
+  --name '订单输入整理' --idempotency-key $createKey
+```
+
+在创建后的任意本地小步修改使 Session 变为 `dirty=true` 后，才使用新的
+Idempotency Key 执行 `builder push`，随后执行 `builder validate`；没有本地变化时
+`push` 会明确返回 `NO_LOCAL_CHANGES`，避免无意义地创建 Revision。
+
+以下示例是**完整 IR 兼容模式**：仅当 Agent 已持有完整 `workflow.ir.json`（例如
+导入）时使用，并且已取得用户对相应写操作的确认。
 
 ### 5.1 创建新的 Workflow
 
@@ -359,7 +388,7 @@ $runKey = 'run-order-normalizer-20260815-001'
 
 CLI 与 Web 编辑的是同一个 Draft Revision。CLI 创建或 Copy 后，将 `Project ID`、
 `Workflow ID` 与 Token 提供给用户，即可在 Web Canvas 加载该 Draft。交接前应先
-`workflow pull`，避免误以为本机文件天然就是服务器最新状态。
+`workflow builder pull --session <目录>`，避免误以为本机文件天然就是服务器最新状态。
 
 当人类在 Canvas 中保存后，Agent 再次修改前必须 Pull；当 Agent Push 后，人类在
 Canvas 再操作前应重新加载。Revision Conflict 是保护并发作者而非可忽略错误。
@@ -370,8 +399,8 @@ Canvas 再操作前应重新加载。Revision Conflict 是保护并发作者而�
 |---|---|
 | CLI 返回参数错误（退出码 2） | 修正命令和必填 flag；不要重试相同错误命令 |
 | 本地 IR 校验失败 | 修正 JSON 外壳、ID、Input 或 Edge；不发起 API 写入 |
-| `valid=false` | 读取诊断中的 Phase、Code、Node/Edge/IR Path，修改完整 IR 后再次 Push/Validate |
-| `DRAFT_REVISION_CONFLICT` | Pull 最新 Draft，合并最小修改，换新 key 后 Push |
+| `valid=false` | 读取诊断中的 Phase、Code、Node/Edge/IR Path，在 Builder Session 中做最小修改后再次 Push/Validate |
+| `DRAFT_REVISION_CONFLICT` | Builder Pull 最新 Draft，合并最小修改，换新 key 后 Push |
 | `CONNECTION_BINDING_REQUIRED` / `SERVICE_BINDING_REQUIRED` | 先查目录；要求授予/配置资源，不能以 URL、Secret 或内部 ID 绕过 |
 | Run 失败 | `run status` 后 `run diagnose`，按 Source Map 的逻辑位置修复并重新测试/发布 |
 | Run 仍在执行 | 有界间隔查询；用户决定取消或继续等待 |

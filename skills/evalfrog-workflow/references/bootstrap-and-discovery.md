@@ -34,9 +34,10 @@ evalfrog connection list \
 ```
 
 The first phase has no CLI command to list Workflows, inspect a Workflow by ID,
-list RPC Services, set a default Project, upload DSL, or export a pulled IR.
-Ask the user for the missing Workflow ID / Published Version / RPC reference;
-do not use private database access or undocumented HTTP endpoints.
+list RPC Services, set a default Project, or upload DSL. `workflow builder
+preview --out` can export the current local Builder Session IR, but does not
+expose DSL. Ask the user for the missing Workflow ID / Published Version / RPC
+reference; do not use private database access or undocumented HTTP endpoints.
 
 ## Local development checks
 
@@ -52,6 +53,9 @@ prove that the supplied API Token has access to the Project.
 
 ## CLI response conventions
 
+- `workflow builder ...` emits a JSON envelope. Read `ok`, then retain the
+  Session, Workflow ID, Revision and `dirty` state from `data`; on failure,
+  read `error.code` and `error.message`.
 - `workflow create|copy`, `draft push`, and `publish` emit concise text. Parse
   the Workflow UUID / Revision / Version from the success line and retain it.
 - `node-type list`, `connection list`, `run status`, and `run diagnose` emit
