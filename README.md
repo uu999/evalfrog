@@ -85,7 +85,7 @@ evalfrog config validate --profile local --config-dir configs
 evalfrog doctor --profile local --config-dir configs
 ```
 
-上述命令来自 M0 的进程与基础设施闭环。当前 Control Plane 已提供 M3 Definition API，但还没有创建真实 Workflow Run 的 Runtime API；开发环境中的 Project、Principal 与 Managed Resource 仍需通过数据库测试 Fixture 或后续管理面初始化。
+上述命令来自 M0 的进程与基础设施闭环，不能代替项目授权准备。当前仓库已具备 M10 的真实 External API、CLI 与 Web 核心闭环；但开发环境中的 Project、Principal、Bearer Token 与 Managed Resource 仍需通过数据库测试 Fixture 或后续管理面初始化。
 
 ## M1 Authoring Contract
 
@@ -373,6 +373,7 @@ Infrastructure Adapter
 - [IR 编辑态结构](./docs/architecture/decisions/03_IR编辑态结构基线.md)
 - [Control Graph 语义](./docs/architecture/decisions/04_ControlGraph语义基线.md)
 - [项目实施计划与验收标准](./docs/plans/项目实施计划与验收标准.md)
+- [Agent CLI 操作手册](./docs/agent/EvalFrog_Agent_CLI_手册.md)
 
 ## 第一阶段不做什么
 
