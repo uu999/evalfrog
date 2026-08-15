@@ -4,7 +4,7 @@
 
 EvalFrog 是一个同时面向 Human Web 与 Agent CLI 的企业级 Workflow Platform。它的目标不是在第一阶段提供大量节点和外围功能，而是先建立一个边界清晰、可恢复、可追踪、可以长期演进的 Workflow 核心。
 
-当前状态：**M0-M11 已完成：Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel、Source Map 错误回映，以及可恢复的 Runtime 观测与故障恢复闭环**。这代表 Product Core Loop Ready，不代表 M12 的容量、安全和发布门槛已经完成。第一阶段开发路线与验收门槛见 [项目实施计划](./docs/plans/项目实施计划与验收标准.md)。
+当前状态：**M0-M11 已完成；M12 Release Candidate 验收进行中**。Agent CLI 与 Human Web 已通过同一 External API 跑通 IR 编辑、Draft Test、Publish、Production Run、Status、Cancel、Source Map 错误回映，以及可恢复的 Runtime 观测与故障恢复闭环。M12 已加入连接池/缓存容量指标、可达依赖扫描、Sandbox Runtime Controller 与零信任部署断言；GitHub Runner 上的真实 `runsc` Containment Probe 与 1,000 次生命周期压力也已通过。但目标环境容量报告、最终不可变镜像扫描，以及目标环境的恢复/网络策略演练尚未完成，因此当前只能称为 Product Core Loop Ready / Release Candidate，不能称为 Production Ready。验收方法见 [发布与容量验收手册](./docs/operations/发布与容量验收手册.md)。
 
 ## 为什么是 EvalFrog
 
@@ -85,7 +85,7 @@ evalfrog config validate --profile local --config-dir configs
 evalfrog doctor --profile local --config-dir configs
 ```
 
-上述命令来自 M0 的进程与基础设施闭环。当前 Control Plane 已提供 M3 Definition API，但还没有创建真实 Workflow Run 的 Runtime API；开发环境中的 Project、Principal 与 Managed Resource 仍需通过数据库测试 Fixture 或后续管理面初始化。
+上述命令来自 M0 的进程与基础设施闭环，不能代替项目授权准备。当前仓库已具备 M10 的真实 External API、CLI 与 Web 核心闭环；但开发环境中的 Project、Principal、Bearer Token 与 Managed Resource 仍需通过数据库测试 Fixture 或后续管理面初始化。
 
 ## M1 Authoring Contract
 
@@ -373,6 +373,8 @@ Infrastructure Adapter
 - [IR 编辑态结构](./docs/architecture/decisions/03_IR编辑态结构基线.md)
 - [Control Graph 语义](./docs/architecture/decisions/04_ControlGraph语义基线.md)
 - [项目实施计划与验收标准](./docs/plans/项目实施计划与验收标准.md)
+- [Agent CLI 操作手册](./docs/agent/EvalFrog_Agent_CLI_手册.md)
+- [可安装的 EvalFrog Workflow Agent Skill](./skills/evalfrog-workflow/SKILL.md)
 
 ## 第一阶段不做什么
 
@@ -387,7 +389,7 @@ Infrastructure Adapter
 
 ## 开发状态
 
-M0-M11 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor、Python Per-Attempt Sandbox、External Run API、Agent CLI/Human Web 闭环，以及 Retry/Recovery/可观测性与故障恢复闭环。当前可称为 Product Core Loop Ready；M12 的容量、安全与发布门槛仍未完成。
+M0-M11 已完成仓库护栏、作者态 IR/Catalog、Compiler/DSL/Source Map、Definition 生命周期、Runtime Engine 与 PostgreSQL、Outbox/Inbox、Project 公平 Scheduler、Scheduling Redis、Kafka/Worker 分布式执行骨架、受管 HTTP/RPC Builtin Executor、Python Per-Attempt Sandbox、External Run API、Agent CLI/Human Web 闭环，以及 Retry/Recovery/可观测性与故障恢复闭环。当前可称为 Product Core Loop Ready；M12 的自动化 `runsc` 与 Compose 门禁已通过，但容量、最终镜像扫描与目标环境发布门槛仍未完成。
 
 ### M10 Product Core Loop
 

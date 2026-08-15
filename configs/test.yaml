@@ -4,6 +4,9 @@ namespace: test
 endpoints:
   control_plane_url: "http://localhost:18080"
 
+http:
+  sandbox_runtime_address: ":18083"
+
 postgres:
   dsn: "postgres://evalfrog@localhost:25432/evalfrog_test?sslmode=disable"
   schema: "evalfrog_test"
@@ -58,6 +61,8 @@ sandbox:
   image: "evalfrog-sandbox-python:test"
   runtime: "runc"
   command: "docker"
+  runtime_url: "https://sandbox-runtime.test.internal/v1"
+  runtime_token: "test-sandbox-runtime-token-not-for-production"
 
 outbox:
   batch: 50

@@ -40,11 +40,12 @@ type Config struct {
 }
 
 type HTTPConfig struct {
-	ControlPlaneAddress  string   `yaml:"control_plane_address"`
-	BuiltinWorkerAddress string   `yaml:"builtin_worker_address"`
-	SandboxWorkerAddress string   `yaml:"sandbox_worker_address"`
-	ReadHeaderTimeout    Duration `yaml:"read_header_timeout"`
-	IdleTimeout          Duration `yaml:"idle_timeout"`
+	ControlPlaneAddress   string   `yaml:"control_plane_address"`
+	BuiltinWorkerAddress  string   `yaml:"builtin_worker_address"`
+	SandboxWorkerAddress  string   `yaml:"sandbox_worker_address"`
+	SandboxRuntimeAddress string   `yaml:"sandbox_runtime_address"`
+	ReadHeaderTimeout     Duration `yaml:"read_header_timeout"`
+	IdleTimeout           Duration `yaml:"idle_timeout"`
 }
 
 type EndpointConfig struct {
@@ -151,9 +152,11 @@ type WorkerConfig struct {
 // fixed resource envelope remains in sandbox.DefaultProfile so neither a
 // project nor an Agent can relax it.
 type SandboxConfig struct {
-	Image   string `yaml:"image"`
-	Runtime string `yaml:"runtime"`
-	Command string `yaml:"command"`
+	Image        string `yaml:"image"`
+	Runtime      string `yaml:"runtime"`
+	Command      string `yaml:"command"`
+	RuntimeURL   string `yaml:"runtime_url"`
+	RuntimeToken string `yaml:"runtime_token"`
 }
 
 type OutboxConfig struct {
@@ -314,6 +317,8 @@ func applyEnvironment(config *Config, lookup func(string) (string, bool)) {
 	setString("EVALFROG_SANDBOX_IMAGE", &config.Sandbox.Image)
 	setString("EVALFROG_SANDBOX_RUNTIME", &config.Sandbox.Runtime)
 	setString("EVALFROG_SANDBOX_COMMAND", &config.Sandbox.Command)
+	setString("EVALFROG_SANDBOX_RUNTIME_URL", &config.Sandbox.RuntimeURL)
+	setString("EVALFROG_SANDBOX_RUNTIME_TOKEN", &config.Sandbox.RuntimeToken)
 	if value, ok := lookup("EVALFROG_KAFKA_BROKERS"); ok && strings.TrimSpace(value) != "" {
 		parts := strings.Split(value, ",")
 		config.Kafka.Brokers = config.Kafka.Brokers[:0]
@@ -339,9 +344,10 @@ func (config Config) Validate() error {
 	add(config.HTTP.ReadHeaderTimeout.Duration() <= 0, "http.read_header_timeout must be positive")
 	add(config.HTTP.IdleTimeout.Duration() <= 0, "http.idle_timeout must be positive")
 	for name, address := range map[string]string{
-		"control_plane_address":  config.HTTP.ControlPlaneAddress,
-		"builtin_worker_address": config.HTTP.BuiltinWorkerAddress,
-		"sandbox_worker_address": config.HTTP.SandboxWorkerAddress,
+		"control_plane_address":   config.HTTP.ControlPlaneAddress,
+		"builtin_worker_address":  config.HTTP.BuiltinWorkerAddress,
+		"sandbox_worker_address":  config.HTTP.SandboxWorkerAddress,
+		"sandbox_runtime_address": config.HTTP.SandboxRuntimeAddress,
 	} {
 		_, err := ParsePort(address)
 		add(err != nil, "http.%s is invalid: %v", name, err)
@@ -417,9 +423,15 @@ func (config Config) Validate() error {
 	}
 	add(config.Sandbox.Image == "" || config.Sandbox.Command == "", "sandbox image and command are required")
 	add(config.Sandbox.Runtime != "runc" && config.Sandbox.Runtime != "runsc", "sandbox runtime must be runc or runsc")
+	sandboxURL, sandboxURLErr := url.ParseRequestURI(config.Sandbox.RuntimeURL)
+	add(sandboxURLErr != nil || (sandboxURL.Scheme != "http" && sandboxURL.Scheme != "https") || sandboxURL.Host == "" || sandboxURL.User != nil, "sandbox runtime_url must be an absolute HTTP(S) URL")
+	if config.Profile != ProductionDefault {
+		add(config.Sandbox.RuntimeToken == "", "sandbox runtime_token is required")
+	}
 	if config.Profile == ProductionDefault {
 		add(config.Sandbox.Runtime != "runsc", "production sandbox runtime must be runsc")
 		add(!strings.Contains(config.Sandbox.Image, "@sha256:"), "production sandbox image must be pinned by digest")
+		add(sandboxURLErr != nil || sandboxURL.Scheme != "https" || sandboxURL.Host == "" || sandboxURL.User != nil, "production sandbox runtime_url must be an absolute HTTPS URL")
 	}
 
 	minimumInboxRetention := config.Kafka.Topics.RuntimeEvent.Retention.Duration() + config.Kafka.MaxManualReplayWindow.Duration()

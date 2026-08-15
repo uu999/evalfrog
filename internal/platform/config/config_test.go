@@ -85,6 +85,8 @@ func TestValidateCapacityConstraints(t *testing.T) {
 		{"inbox retention", func(value *Config) { value.Outbox.InboxRetention = Duration(time.Hour) }, "inbox_retention"},
 		{"recovery scanner interval", func(value *Config) { value.Outbox.ReconcilerInterval = 0 }, "recovery timer, deadline scanner and reconciler intervals"},
 		{"sandbox runtime", func(value *Config) { value.Sandbox.Runtime = "unsafe" }, "sandbox runtime"},
+		{"sandbox runtime token", func(value *Config) { value.Sandbox.RuntimeToken = "" }, "runtime_token"},
+		{"sandbox runtime URL", func(value *Config) { value.Sandbox.RuntimeURL = "" }, "runtime_url"},
 	}
 	for _, test := range tests {
 		test := test
@@ -97,6 +99,18 @@ func TestValidateCapacityConstraints(t *testing.T) {
 				t.Fatalf("expected %q error, got %v", test.message, err)
 			}
 		})
+	}
+}
+
+func TestProductionRuntimeURLRequiresHTTPS(t *testing.T) {
+	t.Parallel()
+	value, err := Load(LoadOptions{Directory: configDirectory(t), Profile: ProductionDefault, LookupEnv: emptyEnvironment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Sandbox.RuntimeURL = "http://sandbox-runtime.internal/v1"
+	if err := value.Validate(); err == nil || !strings.Contains(err.Error(), "runtime_url") {
+		t.Fatalf("expected HTTPS runtime URL validation error, got %v", err)
 	}
 }
 

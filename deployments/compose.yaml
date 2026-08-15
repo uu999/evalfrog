@@ -33,6 +33,7 @@ services:
       retries: 30
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    networks: [authority]
 
   redis-scheduling:
     image: redis:7.4.2-alpine
@@ -49,6 +50,7 @@ services:
       retries: 30
     volumes:
       - scheduling-redis-data:/data
+    networks: [authority]
 
   redis-cache:
     image: redis:7.4.2-alpine
@@ -60,6 +62,7 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+    networks: [authority]
 
   kafka:
     image: apache/kafka:3.9.1
@@ -87,6 +90,7 @@ services:
       retries: 40
     volumes:
       - kafka-data:/var/lib/kafka/data
+    networks: [authority, worker]
 
   kafka-init:
     image: apache/kafka:3.9.1
@@ -105,6 +109,7 @@ services:
         create_topic evalfrog.local.workflow-task-sandbox-v1 1 7200000
         create_topic evalfrog.local.workflow-runtime-event-v1 1 14400000
         create_topic evalfrog.local.workflow-dead-letter-v1 1 86400000
+    networks: [authority]
 
   migrate:
     build:
@@ -116,6 +121,7 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    networks: [authority]
 
   control-plane:
     build:
@@ -139,6 +145,13 @@ services:
       timeout: 2s
       retries: 30
     init: true
+    networks:
+      authority: {}
+      worker: {}
+      # The static Web image deliberately uses the deployment-level Control
+      # Plane name rather than Compose's implementation service name.
+      edge:
+        aliases: [evalfrog-control-plane]
 
   web:
     build:
@@ -149,6 +162,7 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+    networks: [edge]
 
   worker-builtin:
     build:
@@ -166,6 +180,13 @@ services:
       timeout: 2s
       retries: 30
     init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # HTTP/RPC calls can leave only through this explicitly named local
+    # egress network. Production replaces it with an allow-list proxy that
+    # enforces the managed Connection destination policy.
+    networks: [worker, managed-egress]
 
   worker-sandbox:
     build:
@@ -183,6 +204,37 @@ services:
       timeout: 2s
       retries: 30
     init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [worker]
+
+  # Local-only implementation of the dedicated Sandbox Runtime Controller.
+  # It is the sole service with Docker socket access; no Worker has the socket.
+  # Production replaces it with a separately hardened runsc-capable controller.
+  sandbox-runtime:
+    build:
+      <<: *app-build
+      target: sandbox-runtime
+    environment:
+      <<: *common-environment
+      EVALFROG_SANDBOX_RUNTIME_TOKEN: local-sandbox-runtime-token-not-for-production
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/evalfrog", "--sandbox-runtime", "--healthcheck-url", "http://127.0.0.1:8083/health/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [worker]
+    init: true
 
   evalfrog-cli:
     profiles: ["tools"]
@@ -193,8 +245,20 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+    networks: [worker]
 
 volumes:
   postgres-data:
   scheduling-redis-data:
   kafka-data:
+
+networks:
+  # Workers can reach only Kafka and the Worker API. PostgreSQL and both Redis
+  # endpoints have no Worker network attachment, so credential loss alone
+  # cannot become an authority-store network path.
+  authority:
+    internal: true
+  worker:
+    internal: true
+  edge: {}
+  managed-egress: {}

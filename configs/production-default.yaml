@@ -5,6 +5,7 @@ http:
   control_plane_address: ":8080"
   builtin_worker_address: ":8081"
   sandbox_worker_address: ":8082"
+  sandbox_runtime_address: ":8083"
   read_header_timeout: 5s
   idle_timeout: 60s
 
@@ -102,6 +103,15 @@ sandbox:
   image: "registry.example.invalid/evalfrog/python-sandbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   runtime: "runsc"
   command: "docker"
+  # The Sandbox Worker reaches a dedicated runtime controller through this
+  # private HTTPS endpoint and a Secret-Manager-injected service token. The
+  # deployment platform must add mTLS at this boundary when its network model
+  # requires client-certificate authentication. The Worker never receives a
+  # Docker socket; the controller owns the hardened OCI runtime on sandbox
+  # nodes.
+  runtime_url: "https://sandbox-runtime.internal/v1"
+  # Inject EVALFROG_SANDBOX_RUNTIME_TOKEN from Secret Manager at deployment.
+  runtime_token: ""
 
 outbox:
   batch: 100
