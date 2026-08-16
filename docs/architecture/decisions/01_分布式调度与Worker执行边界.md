@@ -178,7 +178,7 @@ CompleteAttempt
 LoadExecutionContext
 ```
 
-前三项由 Attempt Coordinator 提供；`LoadExecutionContext` 由 Control Plane 内显式的 Execution Context Gateway 提供。Gateway 统一读取不可变 Snapshot、Run Input 和已经被 `effective_attempt_id` 接受的上游 Output，封装 Cache Redis 优先、PostgreSQL 回源与回填，并根据 Resource Class 裁剪资源信息。它是内部只读模块，不是独立微服务，不得修改 Run、Node Run 或 Attempt 状态。
+前三项由 Attempt Coordinator 提供；`LoadExecutionContext` 由 Control Plane 内显式的 Execution Context Gateway 提供。Gateway 统一读取不可变 Snapshot、Run Input 和已经被 `effective_attempt_id` 接受的上游 Output，封装 Cache Redis 优先、PostgreSQL 回源与回填，并根据 Resource Class 裁剪资源信息。入口控制节点没有 Attempt 也没有 Output 行，其 `workflow_input` 有效输出就是 Run Input，因此引用该输出的 Binding 由 Gateway 直接复用 Run Input，而不是走 `effective_attempt_id` 查询。它是内部只读模块，不是独立微服务，不得修改 Run、Node Run 或 Attempt 状态。
 
 HTTP/JSON 只是第一阶段 Transport Adapter。Worker Runtime 依赖 Transport-neutral Client Port；未来增加 gRPC 不得改变 Claim、Lease、Fencing、ACK 或 Execution Context 的语义。
 

@@ -23,8 +23,11 @@ func TestGatewayCacheAsideHitMissFallbackAndRefill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repository.snapshotReads != 1 || repository.runReads != 1 || repository.outputReads != 1 || len(first.UpstreamOutputs) != 1 {
+	if repository.snapshotReads != 1 || repository.runReads != 1 || repository.outputReads != 1 || len(first.UpstreamOutputs) != 2 {
 		t.Fatalf("reads=%d/%d/%d context=%+v", repository.snapshotReads, repository.runReads, repository.outputReads, first)
+	}
+	if string(first.UpstreamOutputs["start"]) != `{"run":true}` || string(first.UpstreamOutputs["upstream"]) != `{"value":7}` {
+		t.Fatalf("upstream outputs=%s", first.UpstreamOutputs)
 	}
 	second, err := gateway.Load(context.Background(), command)
 	if err != nil {
@@ -76,7 +79,7 @@ func TestGatewayTreatsCorruptDerivedCacheAsMiss(t *testing.T) {
 	cache := newFakeCache()
 	cache.snapshots["snapshot"] = json.RawMessage(`{"bad":`)
 	cache.runs["run"] = json.RawMessage(`{"bad":`)
-	cache.outputs["runstart"] = json.RawMessage(`{"bad":`)
+	cache.outputs["runupstream"] = json.RawMessage(`{"bad":`)
 	gateway, err := NewGateway(repository, cache, time.Hour, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +89,24 @@ func TestGatewayTreatsCorruptDerivedCacheAsMiss(t *testing.T) {
 	}
 	if repository.snapshotReads != 1 || repository.runReads != 1 || repository.outputReads != 1 {
 		t.Fatalf("corrupt cache did not fall back: reads=%d/%d/%d", repository.snapshotReads, repository.runReads, repository.outputReads)
+	}
+}
+
+func TestGatewayResolvesEntryNodeWorkflowInputWithoutOutputLookup(t *testing.T) {
+	repository := &fakeRepository{metadata: metadataFixture(), snapshot: entryRefSnapshot(), runInput: json.RawMessage(`{"n":5}`)}
+	gateway, err := NewGateway(repository, newFakeCache(), time.Hour, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := gateway.Load(context.Background(), loadFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.outputReads != 0 {
+		t.Fatalf("entry node input performed %d effective output reads", repository.outputReads)
+	}
+	if string(value.WorkflowInput) != `{"n":5}` || string(value.UpstreamOutputs["start"]) != `{"n":5}` || len(value.UpstreamOutputs) != 1 {
+		t.Fatalf("context=%+v", value)
 	}
 }
 
@@ -228,7 +249,25 @@ func metadataFixture() Metadata {
 	return Metadata{ProjectID: "project", RunID: "run", NodeRunID: "node-run", ExecutionNodeID: "code", AttemptID: "attempt", AttemptSequence: 1, SnapshotID: "snapshot", Operation: dsl.Coordinate{Type: "task.python", Version: 1}, ResourceClass: scheduling.ResourceSandbox, ResolvedInputs: map[string]json.RawMessage{"result": json.RawMessage(`7`)}}
 }
 func snapshotFixture() json.RawMessage {
-	document := dsl.Document{DSLVersion: "1", EntryNodeID: "start", ExitNodeID: "end", Nodes: []dsl.Node{{ID: "code", Kind: dsl.KindTask, Operation: dsl.Operation{Type: "task.python", Version: 1, Config: map[string]json.RawMessage{}}, Inputs: map[dsl.PortName]dsl.InputBinding{"source": {Kind: dsl.BindingNodeOutput, DataType: dsl.TypeObject, Output: &dsl.OutputReference{NodeID: "start", Name: "workflow_input"}}}, Outputs: map[dsl.PortName]dsl.DataType{"result": dsl.TypeInteger}, ExecutionPolicy: dsl.ExecutionPolicy{AttemptTimeoutMS: 1000}}}}
+	document := dsl.Document{DSLVersion: "1", EntryNodeID: "start", ExitNodeID: "end", Nodes: []dsl.Node{
+		{ID: "start", Kind: dsl.KindControl, Operation: dsl.Operation{Type: "control.start", Version: 1}, Outputs: map[dsl.PortName]dsl.DataType{"workflow_input": dsl.TypeObject}},
+		{ID: "upstream", Kind: dsl.KindTask, Operation: dsl.Operation{Type: "task.python", Version: 1}, Outputs: map[dsl.PortName]dsl.DataType{"result": dsl.TypeInteger}},
+		{ID: "code", Kind: dsl.KindTask, Operation: dsl.Operation{Type: "task.python", Version: 1, Config: map[string]json.RawMessage{}}, Inputs: map[dsl.PortName]dsl.InputBinding{
+			"source":   {Kind: dsl.BindingNodeOutput, DataType: dsl.TypeObject, Output: &dsl.OutputReference{NodeID: "start", Name: "workflow_input"}},
+			"previous": {Kind: dsl.BindingNodeOutput, DataType: dsl.TypeInteger, Output: &dsl.OutputReference{NodeID: "upstream", Name: "result"}},
+		}, Outputs: map[dsl.PortName]dsl.DataType{"result": dsl.TypeInteger}, ExecutionPolicy: dsl.ExecutionPolicy{AttemptTimeoutMS: 1000}},
+	}}
+	raw, _ := json.Marshal(document)
+	return raw
+}
+
+func entryRefSnapshot() json.RawMessage {
+	document := dsl.Document{DSLVersion: "1", EntryNodeID: "start", ExitNodeID: "end", Nodes: []dsl.Node{
+		{ID: "start", Kind: dsl.KindControl, Operation: dsl.Operation{Type: "control.start", Version: 1}, Outputs: map[dsl.PortName]dsl.DataType{"workflow_input": dsl.TypeObject}},
+		{ID: "code", Kind: dsl.KindTask, Operation: dsl.Operation{Type: "task.python", Version: 1, Config: map[string]json.RawMessage{}}, Inputs: map[dsl.PortName]dsl.InputBinding{
+			"source": {Kind: dsl.BindingNodeOutput, DataType: dsl.TypeObject, Output: &dsl.OutputReference{NodeID: "start", Name: "workflow_input"}},
+		}, Outputs: map[dsl.PortName]dsl.DataType{"result": dsl.TypeInteger}, ExecutionPolicy: dsl.ExecutionPolicy{AttemptTimeoutMS: 1000}},
+	}}
 	raw, _ := json.Marshal(document)
 	return raw
 }

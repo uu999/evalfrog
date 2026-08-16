@@ -67,6 +67,18 @@ func (harness *m5Harness) createCodeWorkflow(t *testing.T, publish bool) (defini
 	return workflow, snapshot
 }
 
+func (harness *m5Harness) createEntryRefCodeWorkflow(t *testing.T) (definition.Workflow, definition.ExecutionSnapshot) {
+	t.Helper()
+	workflow, _, diagnostics, err := harness.definitions.CreateWorkflow(harness.ctx, definition.CreateWorkflowCommand{
+		ProjectID: harness.projectID, PrincipalID: harness.principalID, Name: "M5 Entry Ref",
+		IRJSON: entryRefCodeIR(), IdempotencyKey: "m5-create-entry-ref-" + newID(t),
+	})
+	assertNoDefinitionFailure(t, diagnostics, err)
+	snapshot, diagnostics, err := harness.definitions.CompileDraftTestSnapshot(harness.ctx, harness.projectID, harness.principalID, workflow.ID, 1)
+	assertNoDefinitionFailure(t, diagnostics, err)
+	return workflow, snapshot
+}
+
 func (harness *m5Harness) createTestRun(t *testing.T, workflowID, snapshotID, key string) runtimepkg.WorkflowRunRecord {
 	t.Helper()
 	run, err := harness.creator.TestDraft(harness.ctx, runtimepkg.TestDraftRunCommand{
@@ -672,6 +684,22 @@ func singleCodeIR() []byte {
 		"nodes":[
 			{"id":"start","type":"start","title":"Start","inputs":[],"outputs":[{"name":"workflow_input","data_type":"object"}]},
 			{"id":"transform","type":"code","title":"Transform","inputs":[{"name":"source_code","data_type":"string","source":"literal","value":"def main(inputs):\n    return {'result': {'ok': True}}"}],"outputs":[{"name":"result","data_type":"object"}]},
+			{"id":"end","type":"end","title":"End","inputs":[{"name":"workflow_output","data_type":"object","source":"ref","ref_node":"transform","ref_output":"result"}],"outputs":[]}
+		],
+		"edges":[{"id":"start_to_transform","source":"start","target":"transform"},{"id":"transform_to_end","source":"transform","target":"end"}],
+		"layout":{"start":{"x":0,"y":0},"transform":{"x":100,"y":0},"end":{"x":200,"y":0}}
+	}`)
+}
+
+func entryRefCodeIR() []byte {
+	return []byte(`{
+		"ir_version":"1",
+		"nodes":[
+			{"id":"start","type":"start","title":"Start","inputs":[],"outputs":[{"name":"workflow_input","data_type":"object"}]},
+			{"id":"transform","type":"code","title":"Transform","inputs":[
+				{"name":"source_code","data_type":"string","source":"literal","value":"def main(inputs):\n    return {'result': {'ok': True}}"},
+				{"name":"request","data_type":"object","source":"ref","ref_node":"start","ref_output":"workflow_input"}
+			],"outputs":[{"name":"result","data_type":"object"}]},
 			{"id":"end","type":"end","title":"End","inputs":[{"name":"workflow_output","data_type":"object","source":"ref","ref_node":"transform","ref_output":"result"}],"outputs":[]}
 		],
 		"edges":[{"id":"start_to_transform","source":"start","target":"transform"},{"id":"transform_to_end","source":"transform","target":"end"}],

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -170,6 +171,82 @@ func TestM7KafkaWorkerCoordinatorEngineEndToEnd(t *testing.T) {
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("distributed execution replica did not stop")
+		}
+	}
+}
+
+func TestM7ExecutionContextLoadsEntryNodeInput(t *testing.T) {
+	harness := newM5Harness(t)
+	workflow, snapshot := harness.createEntryRefCodeWorkflow(t)
+	run := harness.createTestRun(t, workflow.ID, snapshot.ID, "m7-entry-input")
+	harness.initializeRun(t, run)
+	authority, err := harness.store.LoadSchedulingSnapshot(harness.ctx, 10)
+	if err != nil || len(authority.Candidates) != 1 {
+		t.Fatalf("candidate=%+v err=%v", authority.Candidates, err)
+	}
+	task, err := harness.store.DispatchReady(harness.ctx, scheduling.DispatchCommand{
+		Candidate: authority.Candidates[0], AttemptID: newID(t), TaskID: newID(t),
+		TraceID: "m7-entry-input", Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := harness.coordinator.Claim(harness.ctx, attempt.ClaimCommand{
+		ProjectID: task.ProjectID, RunID: task.RunID, AttemptID: task.AttemptID,
+		AttemptSequence: task.AttemptSequence, WorkerID: "worker-entry-input", ExecutorBuild: "m7-test",
+		ResourceClass: scheduling.ResourceSandbox,
+		Capabilities:  []dsl.Coordinate{{Type: "task.python", Version: 1}},
+		LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := config.Load(config.LoadOptions{Directory: filepath.Join(root, "configs"), Profile: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheConfig := configuration.Redis.Cache
+	cacheConfig.KeyPrefix += "m7-entry:" + uuid.NewString() + ":"
+	cacheConfig.OperationTimeout = config.Duration(20 * time.Millisecond)
+	cacheConfig.Address = "127.0.0.1:1" // prove Cache Redis failure falls back to PostgreSQL
+	cache := cacheredis.Open(cacheConfig)
+	defer cache.Close()
+	gateway, err := runtimecontext.NewGateway(harness.store, cache, time.Hour, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := gateway.Load(harness.ctx, runtimecontext.LoadCommand{
+		ProjectID: task.ProjectID, RunID: task.RunID, AttemptID: task.AttemptID,
+		AttemptSequence: task.AttemptSequence, LeaseToken: lease.Token, FencingToken: lease.FencingToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resolved any
+	if err = json.Unmarshal(value.Inputs["request"], &resolved); err != nil {
+		t.Fatal(err)
+	}
+	var workflowInput any
+	if err = json.Unmarshal([]byte(`{"value":7}`), &workflowInput); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resolved, workflowInput) {
+		t.Fatalf("resolved entry input=%s", value.Inputs["request"])
+	}
+	if len(value.UpstreamOutputs) != 1 {
+		t.Fatalf("upstream outputs=%+v", value.UpstreamOutputs)
+	}
+	for _, raw := range value.UpstreamOutputs {
+		var upstream any
+		if err = json.Unmarshal(raw, &upstream); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(upstream, workflowInput) {
+			t.Fatalf("upstream entry value=%s", raw)
 		}
 	}
 }

@@ -100,14 +100,14 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 		return ExecutionContext{}, err
 	}
 	snapshotJSON, ok := gateway.cache.GetSnapshot(ctx, metadata.SnapshotID)
-	node, cacheErr := executionNode(snapshotJSON, metadata)
-	if !ok || cacheErr != nil {
+	node, entryNodeID, decodeErr := executionSnapshot(snapshotJSON, metadata)
+	if !ok || decodeErr != nil {
 		gateway.observeCache("snapshot", "miss")
 		snapshotJSON, err = gateway.repository.LoadSnapshotDSL(ctx, metadata.ProjectID, metadata.SnapshotID)
 		if err != nil {
 			return ExecutionContext{}, err
 		}
-		node, err = executionNode(snapshotJSON, metadata)
+		node, entryNodeID, err = executionSnapshot(snapshotJSON, metadata)
 		if err != nil {
 			return ExecutionContext{}, err
 		}
@@ -136,6 +136,13 @@ func (gateway *Gateway) Load(ctx stdcontext.Context, command LoadCommand) (Execu
 		}
 		upstreamID := string(binding.Output.NodeID)
 		if _, exists := upstream[upstreamID]; exists {
+			continue
+		}
+		if upstreamID == string(entryNodeID) && binding.Output.Name == "workflow_input" {
+			// The entry node is a control node: it has no attempt and therefore
+			// no row in node_output_values. Its workflow_input effective output
+			// is the authoritative run input, which is already loaded above.
+			upstream[upstreamID] = cloneRaw(workflowInput)
 			continue
 		}
 		value, hit := gateway.cache.GetEffectiveOutput(ctx, metadata.RunID, upstreamID)
@@ -172,10 +179,10 @@ func (gateway *Gateway) observeCache(kind, outcome string) {
 	}
 }
 
-func executionNode(snapshotJSON json.RawMessage, metadata Metadata) (*dsl.Node, error) {
+func executionSnapshot(snapshotJSON json.RawMessage, metadata Metadata) (*dsl.Node, dsl.NodeID, error) {
 	var document dsl.Document
 	if err := json.Unmarshal(snapshotJSON, &document); err != nil {
-		return nil, fmt.Errorf("decode execution snapshot DSL: %w", err)
+		return nil, "", fmt.Errorf("decode execution snapshot DSL: %w", err)
 	}
 	for index := range document.Nodes {
 		node := &document.Nodes[index]
@@ -183,11 +190,16 @@ func executionNode(snapshotJSON json.RawMessage, metadata Metadata) (*dsl.Node, 
 			continue
 		}
 		if node.Operation.Coordinate() != metadata.Operation {
-			return nil, fmt.Errorf("execution snapshot and persisted node coordinate disagree")
+			return nil, "", fmt.Errorf("execution snapshot and persisted node coordinate disagree")
 		}
-		return node, nil
+		return node, document.EntryNodeID, nil
 	}
-	return nil, fmt.Errorf("execution snapshot and persisted node coordinate disagree")
+	return nil, "", fmt.Errorf("execution snapshot and persisted node coordinate disagree")
+}
+
+func executionNode(snapshotJSON json.RawMessage, metadata Metadata) (*dsl.Node, error) {
+	node, _, err := executionSnapshot(snapshotJSON, metadata)
+	return node, err
 }
 
 func cloneRaw(value json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), value...) }
