@@ -91,7 +91,10 @@ func TestBuilderRemoteLifecycleUsesIRAndPreventsDirtyPull(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["ir"] == nil || body["dsl"] != nil || body["source_map"] != nil {
 				t.Fatalf("create body=%v err=%v", body, err)
 			}
-			writeCLIJSON(t, writer, http.StatusCreated, map[string]any{"workflow": map[string]any{"workflow_id": workflow}, "draft_revision": map[string]any{"revision_number": 1, "ir": json.RawMessage(validCLIIR("Initial"))}})
+			writeCLIJSON(t, writer, http.StatusCreated, map[string]any{
+				"workflow":       completeWorkflowResponse(project, workflow, "Order normalizer"),
+				"draft_revision": completeDraftRevisionResponse(project, workflow, 1, validCLIIR("Initial")),
+			})
 		case "PUT /v1/projects/" + project + "/workflows/" + workflow + "/draft":
 			var body struct {
 				ExpectedRevision int64           `json:"expected_revision"`
@@ -100,11 +103,17 @@ func TestBuilderRemoteLifecycleUsesIRAndPreventsDirtyPull(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.ExpectedRevision != 1 || body.IR == nil {
 				t.Fatalf("push body=%+v err=%v", body, err)
 			}
-			writeCLIJSON(t, writer, http.StatusCreated, map[string]any{"revision_number": 2, "ir": json.RawMessage(validCLIIR("Updated"))})
+			writeCLIJSON(t, writer, http.StatusCreated, completeDraftRevisionResponse(project, workflow, 2, validCLIIR("Updated")))
 		case "POST /v1/projects/" + project + "/workflows/" + workflow + "/draft/validate":
 			writeCLIJSON(t, writer, http.StatusOK, map[string]any{"valid": true, "diagnostics": []any{}})
 		case "GET /v1/projects/" + project + "/workflows/" + workflow + "/draft":
-			writeCLIJSON(t, writer, http.StatusOK, map[string]any{"current": map[string]any{"revision_number": 3, "ir": json.RawMessage(validCLIIR("Pulled"))}})
+			writeCLIJSON(t, writer, http.StatusOK, map[string]any{
+				"project_id":       project,
+				"workflow_id":      workflow,
+				"current_revision": 3,
+				"state_version":    3,
+				"current":          completeDraftRevisionResponse(project, workflow, 3, validCLIIR("Pulled")),
+			})
 		default:
 			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
 		}
@@ -176,8 +185,8 @@ func TestBuilderCopyCreatesCleanBoundSession(t *testing.T) {
 			t.Fatalf("copy body=%v", body)
 		}
 		writeCLIJSON(t, writer, http.StatusCreated, map[string]any{
-			"workflow":       map[string]any{"workflow_id": copiedWorkflow},
-			"draft_revision": map[string]any{"revision_number": 1, "ir": json.RawMessage(validCLIIR("Copied"))},
+			"workflow":       completeWorkflowResponse(project, copiedWorkflow, "Copied workflow"),
+			"draft_revision": completeDraftRevisionResponse(project, copiedWorkflow, 1, validCLIIR("Copied")),
 		})
 	}))
 	defer server.Close()
@@ -222,6 +231,50 @@ func TestBuilderRejectsInvalidLiteralAndUnknownGraphTargets(t *testing.T) {
 	missingTarget := run(1, "add-edge", "--session", session, "--id", "start_to_missing", "--source", "start", "--target", "missing")
 	if missingTarget["error"].(map[string]any)["code"] != "TARGET_NODE_NOT_FOUND" {
 		t.Fatalf("missing target response=%v", missingTarget)
+	}
+}
+
+// These fixtures mirror the complete External API payload, rather than the
+// narrow subset that a command happens to print. The API client intentionally
+// rejects unknown JSON fields, so this guards the CLI against treating a
+// successful server-side definition write as a client-side decode failure.
+func completeWorkflowResponse(projectID, workflowID, name string) map[string]any {
+	return map[string]any{
+		"workflow_id":       workflowID,
+		"project_id":        projectID,
+		"name":              name,
+		"active_version_id": nil,
+		"created_by":        "44444444-4444-4444-8444-444444444444",
+		"created_at":        "2026-08-16T00:00:00Z",
+		"updated_at":        "2026-08-16T00:00:00Z",
+	}
+}
+
+func completeDraftRevisionResponse(projectID, workflowID string, revision int64, ir []byte) map[string]any {
+	return map[string]any{
+		"draft_revision_id":      "55555555-5555-4555-8555-555555555555",
+		"project_id":             projectID,
+		"workflow_id":            workflowID,
+		"revision_number":        revision,
+		"ir":                     json.RawMessage(ir),
+		"catalog_revision":       "catalog-2026-08-16",
+		"created_by":             "44444444-4444-4444-8444-444444444444",
+		"created_at":             "2026-08-16T00:00:00Z",
+		"cloned_from_version_id": nil,
+	}
+}
+
+func completePublishedVersionResponse(projectID, workflowID string, number int64) map[string]any {
+	return map[string]any{
+		"version_id":               "66666666-6666-4666-8666-666666666666",
+		"project_id":               projectID,
+		"workflow_id":              workflowID,
+		"version_number":           number,
+		"source_draft_revision_id": "55555555-5555-4555-8555-555555555555",
+		"execution_snapshot_id":    "77777777-7777-4777-8777-777777777777",
+		"change_log":               "published by test",
+		"created_by":               "44444444-4444-4444-8444-444444444444",
+		"created_at":               "2026-08-16T00:00:00Z",
 	}
 }
 

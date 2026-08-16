@@ -169,12 +169,7 @@ func (app App) builderPull(ctx context.Context, arguments []string) int {
 	} else if session.dirty() && !*discardLocal {
 		return app.builderFailure("LOCAL_CHANGES_NOT_PUSHED", "builder session has local changes; pass --discard-local to replace them", 1)
 	}
-	var response struct {
-		Current struct {
-			Revision int64           `json:"revision_number"`
-			IR       json.RawMessage `json:"ir"`
-		} `json:"current"`
-	}
+	var response apiDraftResponse
 	err = client.request(ctx, http.MethodGet, "/v1/projects/"+common.project+"/workflows/"+*workflowID+"/draft", "", nil, &response)
 	if err != nil {
 		return app.builderFailureFor(err)
@@ -221,13 +216,8 @@ func (app App) builderCreate(ctx context.Context, arguments []string) int {
 		return app.builderFailureFor(err)
 	}
 	var response struct {
-		Workflow struct {
-			ID string `json:"workflow_id"`
-		} `json:"workflow"`
-		Draft struct {
-			Revision int64           `json:"revision_number"`
-			IR       json.RawMessage `json:"ir"`
-		} `json:"draft_revision"`
+		Workflow apiWorkflowResponse      `json:"workflow"`
+		Draft    apiDraftRevisionResponse `json:"draft_revision"`
 	}
 	err = client.request(ctx, http.MethodPost, "/v1/projects/"+common.project+"/workflows", *key, map[string]any{"name": *name, "ir": json.RawMessage(canonical)}, &response)
 	if err != nil {
@@ -278,13 +268,8 @@ func (app App) builderCopy(ctx context.Context, arguments []string) int {
 		return app.builderFailureFor(err)
 	}
 	var response struct {
-		Workflow struct {
-			ID string `json:"workflow_id"`
-		} `json:"workflow"`
-		Draft struct {
-			Revision int64           `json:"revision_number"`
-			IR       json.RawMessage `json:"ir"`
-		} `json:"draft_revision"`
+		Workflow apiWorkflowResponse      `json:"workflow"`
+		Draft    apiDraftRevisionResponse `json:"draft_revision"`
 	}
 	err = client.request(ctx, http.MethodPost, "/v1/projects/"+common.project+"/workflows:copy", *key, map[string]any{"source_workflow_id": *sourceWorkflow, "source_version_number": *version, "name": *name}, &response)
 	if err != nil {
@@ -736,10 +721,7 @@ func (app App) builderPush(ctx context.Context, arguments []string) int {
 	if err != nil {
 		return app.builderFailureFor(err)
 	}
-	var response struct {
-		Revision int64           `json:"revision_number"`
-		IR       json.RawMessage `json:"ir"`
-	}
+	var response apiDraftRevisionResponse
 	err = client.request(ctx, http.MethodPut, "/v1/projects/"+session.Meta.ProjectID+"/workflows/"+session.Meta.WorkflowID+"/draft", *key, map[string]any{"expected_revision": session.Meta.Revision, "ir": json.RawMessage(canonical)}, &response)
 	if err != nil {
 		return app.builderFailureFor(err)

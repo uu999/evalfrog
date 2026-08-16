@@ -130,13 +130,8 @@ func (app App) workflow(ctx context.Context, arguments []string) int {
 			return code
 		}
 		var response struct {
-			Workflow struct {
-				ID string `json:"workflow_id"`
-			} `json:"workflow"`
-			Draft struct {
-				Revision int64           `json:"revision_number"`
-				IR       json.RawMessage `json:"ir"`
-			} `json:"draft_revision"`
+			Workflow apiWorkflowResponse      `json:"workflow"`
+			Draft    apiDraftRevisionResponse `json:"draft_revision"`
 		}
 		err = client.request(ctx, http.MethodPost, "/v1/projects/"+common.project+"/workflows", *key, map[string]any{"name": *name, "ir": json.RawMessage(raw)}, &response)
 		if app.reportAPIError(err) {
@@ -163,12 +158,7 @@ func (app App) workflow(ctx context.Context, arguments []string) int {
 			}
 			return 2
 		}
-		var response struct {
-			Current struct {
-				Revision int64           `json:"revision_number"`
-				IR       json.RawMessage `json:"ir"`
-			} `json:"current"`
-		}
+		var response apiDraftResponse
 		err := client.request(ctx, http.MethodGet, "/v1/projects/"+common.project+"/workflows/"+*workflowID+"/draft", "", nil, &response)
 		if app.reportAPIError(err) {
 			return 1
@@ -198,13 +188,8 @@ func (app App) workflow(ctx context.Context, arguments []string) int {
 			return 2
 		}
 		var response struct {
-			Workflow struct {
-				ID string `json:"workflow_id"`
-			} `json:"workflow"`
-			Draft struct {
-				Revision int64           `json:"revision_number"`
-				IR       json.RawMessage `json:"ir"`
-			} `json:"draft_revision"`
+			Workflow apiWorkflowResponse      `json:"workflow"`
+			Draft    apiDraftRevisionResponse `json:"draft_revision"`
 		}
 		err := client.request(ctx, http.MethodPost, "/v1/projects/"+common.project+"/workflows:copy", *key, map[string]any{"source_workflow_id": *source, "source_version_number": *version, "name": *name}, &response)
 		if app.reportAPIError(err) {
@@ -258,10 +243,7 @@ func (app App) draft(ctx context.Context, arguments []string) int {
 		if code := app.localValidate(raw); code != 0 {
 			return code
 		}
-		var response struct {
-			Revision int64           `json:"revision_number"`
-			IR       json.RawMessage `json:"ir"`
-		}
+		var response apiDraftRevisionResponse
 		err = client.request(ctx, http.MethodPut, "/v1/projects/"+common.project+"/workflows/"+*workflowID+"/draft", *key, map[string]any{"expected_revision": workspace.Revision, "ir": json.RawMessage(raw)}, &response)
 		if app.reportAPIError(err) {
 			return 1
@@ -335,9 +317,7 @@ func (app App) publish(ctx context.Context, arguments []string) int {
 		return 1
 	}
 	var response struct {
-		Version struct {
-			Number int64 `json:"version_number"`
-		} `json:"version"`
+		Version apiPublishedVersionResponse `json:"version"`
 	}
 	err = client.request(ctx, http.MethodPost, "/v1/projects/"+common.project+"/workflows/"+*workflowID+"/publish", *key, map[string]any{"expected_revision": workspace.Revision, "change_log": *changeLog}, &response)
 	if app.reportAPIError(err) {
