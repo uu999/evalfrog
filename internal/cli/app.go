@@ -22,6 +22,7 @@ type App struct {
 	Error  io.Writer
 	HTTP   *http.Client
 	Home   string
+	Env    func(string) string
 }
 
 func (app App) Run(ctx context.Context, arguments []string) int {
@@ -65,12 +66,19 @@ type commonFlags struct {
 
 func (app App) common(flags *flag.FlagSet, requiredProject bool) *commonFlags {
 	value := &commonFlags{}
-	flags.StringVar(&value.server, "server", "", "EvalFrog Control Plane base URL")
-	flags.StringVar(&value.token, "token", "", "bearer API token")
+	flags.StringVar(&value.server, "server", app.environment("EF_SERVER"), "EvalFrog Control Plane base URL")
+	flags.StringVar(&value.token, "token", app.environment("EF_TOKEN"), "bearer API token")
 	if requiredProject {
-		flags.StringVar(&value.project, "project", "", "project UUID")
+		flags.StringVar(&value.project, "project", app.environment("EF_PROJECT"), "project UUID")
 	}
 	return value
+}
+
+func (app App) environment(name string) string {
+	if app.Env != nil {
+		return app.Env(name)
+	}
+	return os.Getenv(name)
 }
 
 func (app App) api(value *commonFlags) (*apiClient, bool) {

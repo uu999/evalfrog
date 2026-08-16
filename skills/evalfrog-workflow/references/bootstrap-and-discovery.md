@@ -11,8 +11,10 @@ EF_TOKEN=<bearer-token>
 ```
 
 Use the installed `evalfrog` binary. The CLI has no `auth login`, default
-project, or Token-issuance command. If a value is missing or a request returns
-401/403, stop and ask for the correct authorized context.
+project, or Token-issuance command. `EF_SERVER`, `EF_PROJECT`, and `EF_TOKEN`
+are the command defaults; explicit `--server`, `--project`, and `--token`
+flags override them for a single command. If a value is missing or a request
+returns 401/403, stop and ask for the correct authorized context.
 
 ## First commands
 

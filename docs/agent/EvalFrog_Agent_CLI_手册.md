@@ -107,6 +107,10 @@ $env:EF_TOKEN = '<bearer-api-token>'
 $EF = '.\bin\evalfrog.exe' # 或部署方安装的 evalfrog
 ```
 
+`EF_SERVER`、`EF_PROJECT` 与 `EF_TOKEN` 是 CLI 的默认连接上下文；配置后可以省略
+每条命令中的 `--server`、`--project`、`--token`。显式传入这三个 Flag 时，以 Flag
+为准，适合临时切换 Project 或 Control Plane。
+
 仓库本地开发可先构建 CLI：
 
 ```powershell
